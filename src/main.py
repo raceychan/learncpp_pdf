@@ -16,11 +16,6 @@ from src.config import Config
 frozen = dataclass(frozen=True, slots=True, kw_only=True)
 
 
-def sessoin_factory():
-    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20, connect=10))
-    return session
-
-
 def namesort(name: str):
     """Used to sort filenames
     0 -> 9 -> "a" -> "z"
@@ -31,11 +26,15 @@ def namesort(name: str):
 def html_to_pdf(
     html: Path, out: Path, options: dict = {"enable-local-file-access": ""}
 ):
+    if out.exists():
+        raise Exception("duplicated convertion should be avoided")
+
     post = Post.parse_html(name=html.stem, text=html.read_text())
     post.remove_elements()
     try:
         pdfkit.from_string(post.html, str(out), options=options)
     except IOError as ie:
+        # TODO: make it in a file
         logger.error(f"Failed to convert {html.stem}, \n Error: {ie}")
     logger.success(f"html is converted to {out}")
 
@@ -141,7 +140,6 @@ class DownloadService:
     def __init__(
         self, session: aiohttp.ClientSession, sems: asyncio.Semaphore, home_url: str
     ):
-
         self._session = session
         self._sems = sems
         self._home_url = home_url
@@ -157,15 +155,9 @@ class DownloadService:
         outline = OutLinePage.parse_html(html)
         return outline
 
-    async def download_chapter(
-        self, target_folder: Path, table: ChapterTable, chapter: Chapter
-    ) -> None:
-        file = target_folder / table.name / f"{chapter.filename}"
-        if file.exists():
-            return
-
-        res = await self.get_content(chapter.link)
-        file.write_text(res)
+    async def download_chapter(self, link: str, dst_f: Path) -> None:
+        res = await self.get_content(link)
+        dst_f.write_text(res)
 
     async def download_chapters(self, chapters_folder: Path):
         # we may want to cache outline.html
@@ -174,11 +166,12 @@ class DownloadService:
         for table in outline.content_tables():
             table_folder = chapters_folder / table.name
             table_folder.mkdir(exist_ok=True)
-
+            # TODO: refactor, this logic looks weird
             for chapter in table.chapters:
-                task = asyncio.create_task(
-                    self.download_chapter(chapters_folder, table, chapter)
-                )
+                dst_f = table_folder / f"{chapter.filename}"
+                if dst_f.exists():
+                    continue
+                task = asyncio.create_task(self.download_chapter(chapter.link, dst_f))
                 todo.add(task)
 
         await asyncio.gather(*todo)
@@ -234,7 +227,6 @@ class FileManager:
         return res
 
     def remove_cached(self):
-
         shutil.rmtree(self._config.HTML_FOLDER)
         shutil.rmtree(self._config.PDF_CHAPTER)
 
@@ -273,29 +265,37 @@ class Application:
             for src_f, dst_f in self._file_mgr.sorted_dir_pairs()
         ]
         res = [task.get() for task in tasks]
+        logger.success("files converted")
         return res
 
-    def save_pdf(self, dst: Path):
+    def save_book_to(self, dst: Path):
         tasks = []
         for pdf_dirs in self._file_mgr.sorted_dst_dirs():
             chapter_idx = pdf_dirs[0].parent.stem.split("Chapter")[1]
-            out = dst / f"chapter_{chapter_idx}.pdf"
-            task = self._worker_pool.apply_async(merge_chapters, args=(pdf_dirs, out))
+            dst_f = dst / f"chapter_{chapter_idx}.pdf"
+            task = self._worker_pool.apply_async(merge_chapters, args=(pdf_dirs, dst_f))
             tasks.append(task)
 
         merged = [task.get() for task in tasks]
         learncpp = merge_chapters(merged, dst / "learncpp.pdf")
+        logger.success(f"files merged and saved to{learncpp}")
         return learncpp
 
     async def run(self):
         await self.download_chapters()
         self.convert_to_pdf()
-        self.save_pdf(self._config.PDF_BOOK_FOLDER)
+        self.save_book_to(self._config.PDF_BOOK_FOLDER)
         self._file_mgr.remove_cached()
 
     async def close(self):
         self._worker_pool.close()
         await self._dl_service.close()
+
+
+def sessoin_factory():
+    timeout = aiohttp.ClientTimeout(total=60, connect=10)
+    session = aiohttp.ClientSession()
+    return session
 
 
 def app_factory(config: Config):

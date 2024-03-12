@@ -11,5 +11,5 @@ class Config:
     PDF_FOLDER: Path = PROJECT_ROOT / "pdf"
     PDF_CHAPTER: Path = PDF_FOLDER / HTML_CHAPTER.name
     PDF_BOOK_FOLDER: Path = PDF_FOLDER / "learncpp"
-    DOWNLOAD_CONCURRENT_MAX: int = 100
+    DOWNLOAD_CONCURRENT_MAX: int = 1000
     COMPUTE_PROCESS_MAX: int = os.cpu_count() or 1
