@@ -24,19 +24,20 @@ def namesort(name: str):
 
 
 def html_to_pdf(
-    html: Path, out: Path, options: dict = {"enable-local-file-access": ""}
+    html: Path, dst_f: Path, options: dict = {"enable-local-file-access": ""}
 ):
-    if out.exists():
+    if dst_f.exists():
         raise Exception("duplicated convertion should be avoided")
 
     post = Post.parse_html(name=html.stem, text=html.read_text())
     post.remove_elements()
     try:
-        pdfkit.from_string(post.html, str(out), options=options)
+        pdfkit.from_string(post.html, str(dst_f), options=options)
     except IOError as ie:
-        # TODO: make it in a file
         logger.error(f"Failed to convert {html.stem}, \n Error: {ie}")
-    logger.success(f"html is converted to {out}")
+    finally:
+        ...  # save it to error log using append mode, in linux it will 
+    logger.success(f"html is converted to {dst_f}")
 
 
 def merge_chapters(pdfs: list[Path], out: Path):
