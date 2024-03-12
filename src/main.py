@@ -127,15 +127,24 @@ class OutLinePage:
 
 
 class DownloadService:
-    def __init__(self, session: aiohttp.ClientSession, sems: asyncio.Semaphore):
+    def __init__(
+        self, session: aiohttp.ClientSession, sems: asyncio.Semaphore, home_url: str
+    ):
+
         self._session = session
         self._sems = sems
+        self._home_url = home_url
 
     async def get_content(self, url: str = "/"):
         async with self._sems:
             async with self._session.get(url) as response:
                 res = await response.text()
         return res
+
+    async def download_outline(self):
+        html = await self.get_content(self._home_url)
+        outline = OutLinePage.parse_html(html)
+        return outline
 
     async def download_chapter(
         self, target_folder: Path, table: ChapterTable, chapter: Chapter
@@ -147,7 +156,8 @@ class DownloadService:
         res = await self.get_content(chapter.link)
         file.write_text(res)
 
-    async def download_chapters(self, chapters_folder: Path, outline: OutLinePage):
+    async def download_chapters(self, chapters_folder: Path):
+        outline = await self.download_outline()
         todo = set()
         for table in outline.content_tables():
             table_folder = chapters_folder / table.name
@@ -189,10 +199,6 @@ class FileManager:
         self._config.PDF_CHAPTER.mkdir(exist_ok=True)
         self._config.PDF_BOOK_FOLDER.mkdir(exist_ok=True)
 
-    def update_outline(self, outline: str):
-        self._config.CHAPTER_OUTLINE.write_text(outline)
-        logger.success(f"Done!, saved to {self._config.CHAPTER_OUTLINE.name}")
-
     @property
     def chapter_folders(self):
         chapter_folders = sorted(
@@ -226,6 +232,12 @@ class FileManager:
                 res.append((src_f, dst_f))
         return res
 
+    def remove_cached(self):
+        import shutil
+
+        shutil.rmtree(self._config.HTML_FOLDER)
+        shutil.rmtree(self._config.PDF_CHAPTER)
+
 
 class Application:
     def __init__(
@@ -235,13 +247,11 @@ class Application:
         dl_service: DownloadService,
         file_mgr: FileManager,
         pool: Pool,
-        outline: OutLinePage,
     ):
         self._config = config
         self._dl_service = dl_service
         self._file_mgr = file_mgr
         self._pool = pool
-        self._book_outline = outline
 
     @cached_property
     def config(self):
@@ -254,14 +264,8 @@ class Application:
         await self.close()
         logger.info("Application Exit")
 
-    async def update_outline(self):
-        outline_html = await self._dl_service.get_content(self._config.LEARNCPP)
-        self._file_mgr.update_outline(outline_html)
-
     async def download_chapters(self):
-        await self._dl_service.download_chapters(
-            self._config.HTML_CHAPTER, self._book_outline
-        )
+        await self._dl_service.download_chapters(self._config.HTML_CHAPTER)
 
     def convert_to_pdf(self):
         tasks = [
@@ -283,6 +287,12 @@ class Application:
         learncpp = merge_chapters(merged, dst / "learncpp.pdf")
         return learncpp
 
+    async def run(self):
+        await self.download_chapters()
+        self.convert_to_pdf()
+        self.save_pdf(self._config.PDF_BOOK_FOLDER)
+        self._file_mgr.remove_cached()
+
     async def close(self):
         self._pool.close()
         await self._dl_service.close()
@@ -290,16 +300,16 @@ class Application:
 
 def app_factory(config: Config):
     sems = asyncio.Semaphore(config.DOWNLOAD_CONCURRENT_MAX)
-    dl_service = DownloadService(session=sessoin_factory(), sems=sems)
+    dl_service = DownloadService(
+        session=sessoin_factory(), sems=sems, home_url=config.LEARNCPP
+    )
     pool = Pool(config.COMPUTE_PROCESS_MAX)
     file_mgr = FileManager(config=config)
-    outline = OutLinePage.parse_html(config.CHAPTER_OUTLINE.read_text())
     app = Application(
         config=config,
         dl_service=dl_service,
         file_mgr=file_mgr,
         pool=pool,
-        outline=outline,
     )
     return app
 
@@ -308,8 +318,7 @@ async def main():
     config = Config()
     app = app_factory(config)
     async with app:
-        # app._save_chapters()
-        app.save_pdf(config.PDF_BOOK_FOLDER)
+        await app.run()
 
 
 if __name__ == "__main__":
