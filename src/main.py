@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 from dataclasses import dataclass
 from functools import cached_property
 from multiprocessing.pool import Pool
@@ -37,6 +38,16 @@ def html_to_pdf(
     except IOError as ie:
         logger.error(f"Failed to convert {html.stem}, \n Error: {ie}")
     logger.success(f"html is converted to {out}")
+
+
+def merge_chapters(pdfs: list[Path], out: Path):
+    merger = pypdf.PdfWriter()
+    for file in pdfs:
+        merger.append(file)
+
+    merger.write(out)
+    merger.close()
+    return out
 
 
 @frozen
@@ -157,6 +168,7 @@ class DownloadService:
         file.write_text(res)
 
     async def download_chapters(self, chapters_folder: Path):
+        # we may want to cache outline.html
         outline = await self.download_outline()
         todo = set()
         for table in outline.content_tables():
@@ -174,17 +186,6 @@ class DownloadService:
 
     async def close(self):
         await self._session.close()
-
-
-def merge_chapters(pdfs: list[Path], out: Path):
-    # TODO: use process pool
-    merger = pypdf.PdfWriter()
-    for file in pdfs:
-        merger.append(file)
-
-    merger.write(out)
-    merger.close()
-    return out
 
 
 class FileManager:
@@ -233,7 +234,6 @@ class FileManager:
         return res
 
     def remove_cached(self):
-        import shutil
 
         shutil.rmtree(self._config.HTML_FOLDER)
         shutil.rmtree(self._config.PDF_CHAPTER)
@@ -246,12 +246,12 @@ class Application:
         config: Config,
         dl_service: DownloadService,
         file_mgr: FileManager,
-        pool: Pool,
+        worker_pool: Pool,
     ):
         self._config = config
         self._dl_service = dl_service
         self._file_mgr = file_mgr
-        self._pool = pool
+        self._worker_pool = worker_pool
 
     @cached_property
     def config(self):
@@ -269,7 +269,7 @@ class Application:
 
     def convert_to_pdf(self):
         tasks = [
-            self._pool.apply_async(html_to_pdf, args=(src_f, dst_f))
+            self._worker_pool.apply_async(html_to_pdf, args=(src_f, dst_f))
             for src_f, dst_f in self._file_mgr.sorted_dir_pairs()
         ]
         res = [task.get() for task in tasks]
@@ -280,7 +280,7 @@ class Application:
         for pdf_dirs in self._file_mgr.sorted_dst_dirs():
             chapter_idx = pdf_dirs[0].parent.stem.split("Chapter")[1]
             out = dst / f"chapter_{chapter_idx}.pdf"
-            task = self._pool.apply_async(merge_chapters, args=(pdf_dirs, out))
+            task = self._worker_pool.apply_async(merge_chapters, args=(pdf_dirs, out))
             tasks.append(task)
 
         merged = [task.get() for task in tasks]
@@ -294,7 +294,7 @@ class Application:
         self._file_mgr.remove_cached()
 
     async def close(self):
-        self._pool.close()
+        self._worker_pool.close()
         await self._dl_service.close()
 
 
@@ -309,7 +309,7 @@ def app_factory(config: Config):
         config=config,
         dl_service=dl_service,
         file_mgr=file_mgr,
-        pool=pool,
+        worker_pool=pool,
     )
     return app
 
