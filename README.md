@@ -24,6 +24,16 @@ cd learncpp_pdf
 make install && make run
 ```
 
+### Configuration
+
+You can create a '.env' file under the project root, the program will read them.
+
+| key| type| default| 
+| --- | --- | --- |
+| DOWNLOAD_CONCURRENT_MAX |int | 200 |
+| COMPUTE_PROCESS_MAX | int | os.cpu_count() | 
+
+
 ## Features
 
 - Ultra fast, utilize concurrency for scraping and parallel for making PDF, the whole process is expected to finish within a few minutes.

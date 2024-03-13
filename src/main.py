@@ -2,8 +2,6 @@ import asyncio
 import os
 import shutil
 import typing as ty
-
-# from argparse import ArgumentParser
 from dataclasses import dataclass
 from functools import cached_property
 from multiprocessing.pool import Pool
@@ -398,13 +396,6 @@ def app_factory(config: Config):
         worker_pool=pool,
     )
     return app
-
-
-# def parse_args():
-#     parser = ArgumentParser()
-#     parser.add_argument()
-#     args = parser.parse_args()
-#     return args
 
 
 async def main():
