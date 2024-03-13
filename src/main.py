@@ -2,6 +2,7 @@ import asyncio
 import os
 import shutil
 import typing as ty
+from argparse import ArgumentParser
 from dataclasses import dataclass
 from functools import cached_property
 from multiprocessing.pool import Pool
@@ -10,6 +11,7 @@ from pathlib import Path
 import aiohttp
 import pdfkit
 import pypdf
+from dotenv import dotenv_values
 from loguru import logger
 from rich.progress import Progress
 from selectolax.lexbor import LexborHTMLParser, LexborNode
@@ -32,6 +34,14 @@ class Config:
     PDF_FOLDER: Path = CACHE_FOLDER / "pdf"
     PDF_CHAPTER: Path = PDF_FOLDER / HTML_CHAPTER.name
     PDF_BOOK_FOLDER: Path = PDF_FOLDER / "learncpp"
+
+    @classmethod
+    def from_env(cls, env_file: Path = Path.cwd() / ".env"):
+        values = dotenv_values(env_file)
+        for k, v in values.items():
+            if k in cls.__annotations__:
+                values[k] = cls.__annotations__[k](v)
+        return cls(**values)
 
 
 def append_error(error_log: Path, error_info: str):
@@ -384,8 +394,15 @@ def app_factory(config: Config):
     return app
 
 
+# def parse_args():
+#     parser = ArgumentParser()
+#     parser.add_argument()
+#     args = parser.parse_args()
+#     return args
+
+
 async def main():
-    config = Config()
+    config = Config.from_env()
     app = app_factory(config)
     async with app:
         await app.run()

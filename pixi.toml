@@ -15,6 +15,7 @@ selectolax = ">=0.3.20,<0.4"
 loguru = ">=0.7.2,<0.8"
 rich = ">=13.7.1,<13.8"
 pypdf = ">=4.1.0,<4.2"
+python-dotenv = ">=1.0.1,<1.1"
 
 [pypi-dependencies]
 pdfkit = "~=1.0.0"
