@@ -211,7 +211,6 @@ class DownloadService:
         for table in outline.content_tables():
             table_folder = chapters_folder / table.name
             table_folder.mkdir(exist_ok=True)
-            # TODO: refactor, this logic looks weird
             for chapter in table.chapters:
                 dst_f = table_folder / chapter.filename
                 if dst_f.exists():
