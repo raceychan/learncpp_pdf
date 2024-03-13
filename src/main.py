@@ -366,7 +366,6 @@ class Application:
             )
 
     def _merging_pdfs(self, merging_folder: Path) -> list[Path]:
-        # TODO: this should detect merged chapter and skip if it exists
         merging_task = self._progress.add_task("[cyan]Merging PDFs...")
 
         tasks = []
