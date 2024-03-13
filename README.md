@@ -2,7 +2,7 @@
 
 ## Disclaimer
 
-all content comes from [learncpp.com](https://learncpp.com), since it specifically states that pdf version should be spread out and people should instead make pdf out of their own, hence this tool
+All content comes from [learncpp.com](https://learncpp.com), since it specifically states that pdf version should be spread out and people should instead make pdf out of their own, hence this tool
 
 ## Usage
 
@@ -27,5 +27,3 @@ make install && make run
 ## Features
 
 - Ultra fast, utilize concurrency for scraping and parallel for making PDF, the whole process is expected to finish within a few minutes.
-
-
