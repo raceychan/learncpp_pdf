@@ -28,11 +28,11 @@ make install && make run
 
 You can create a '.env' file under the project root, the program will read them.
 
-| key| type| default| 
+| key| type| default|
 | --- | --- | --- |
 | DOWNLOAD_CONCURRENT_MAX |int | 200 |
-| COMPUTE_PROCESS_MAX | int | os.cpu_count() | 
-
+| COMPUTE_PROCESS_MAX | int | os.cpu_count() |
+| PDF_CONVERTION_MAX_RETRY | int | 3 |
 
 ## Features
 
