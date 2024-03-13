@@ -17,6 +17,8 @@ from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 frozen = dataclass(frozen=True, slots=True, kw_only=True)
 
+type SrcDstPairs = list[tuple[Path, Path]]
+
 
 @frozen
 class Config:
@@ -36,7 +38,7 @@ class Config:
     PDF_MERGED_CHAPTER_FOLDER: Path = PDF_FOLDER / "learncpp"
 
     @classmethod
-    def from_env(cls, env_file: Path = Path.cwd() / ".env"):
+    def from_env(cls, env_file: Path = Path.cwd() / ".env") -> "Config":
         values = dotenv_values(env_file)
         for k, v in values.items():
             if val_type := cls.__annotations__.get(k):
@@ -49,12 +51,12 @@ class Config:
         return cls(**values)
 
 
-def append_error(error_log: Path, error_info: str):
+def append_error(error_log: Path, error_info: str) -> None:
     with error_log.open(mode="a") as f:
         f.write(f"{error_info} \n")
 
 
-def namesort(name: str):
+def namesort(name: str) -> tuple[int, int | str]:
     """Used to sort filenames
     0 -> 9 -> "a" -> "z"
     """
@@ -76,7 +78,7 @@ def html_to_pdf(
         return (1, html, dst_f)
 
 
-def merge_chapters(pdfs: list[Path], out: Path):
+def merge_chapters(pdfs: list[Path], out: Path) -> Path:
     merger = pypdf.PdfWriter()
     for file in pdfs:
         merger.append(file)
@@ -120,12 +122,12 @@ class Chapter:
     link: str
 
     @property
-    def filename(self):
+    def filename(self) -> str:
         no = self.no.replace(".", "_").replace(" ", "_")
         return f"{no}.html"
 
     @classmethod
-    def from_node(cls, chapter_node: LexborNode):
+    def from_node(cls, chapter_node: LexborNode) -> "Chapter":
         chapter_no = chapter_node.css("div.lessontable-row-number")[0].text()
         title_node = chapter_node.css("div.lessontable-row-title")[0]
         title = title_node.text()
@@ -144,7 +146,7 @@ class ChapterTable:
     chapters: tuple[Chapter, ...]
 
     @classmethod
-    def from_node(cls, table_node: LexborNode):
+    def from_node(cls, table_node: LexborNode) -> "ChapterTable":
         table_name = table_node.css('div.lessontable-header > a[name*="Chapter"]')[
             0
         ].attributes["name"]
@@ -167,7 +169,7 @@ class OutLinePage:
             yield ChapterTable.from_node(table)
 
     @classmethod
-    def parse_html(cls, text: str):
+    def parse_html(cls, text: str) -> "OutLinePage":
         outline_dom = LexborHTMLParser(text)
         if not outline_dom.body:
             raise ValueError("Failed to parse html")
@@ -188,13 +190,13 @@ class DownloadService:
         self._home_url = home_url
         self._progress = progress
 
-    async def get_content(self, url: str = "/"):
+    async def get_content(self, url: str = "/") -> str:
         async with self._sems:
             async with self._session.get(url) as response:
                 res = await response.text()
         return res
 
-    async def download_outline(self):
+    async def download_outline(self) -> OutLinePage:
         html = await self.get_content(self._home_url)
         outline = OutLinePage.parse_html(html)
         return outline
@@ -204,7 +206,7 @@ class DownloadService:
         dst_f.write_text(res)
         self._progress.update(self.__download_task, advance=1)
 
-    async def download_chapters(self, chapters_folder: Path):
+    async def download_chapters(self, chapters_folder: Path) -> None:
         self.__download_task = self._progress.add_task("[red]Downloading HTMLs...")
         outline = await self.download_outline()
         todo = set()
@@ -225,7 +227,7 @@ class DownloadService:
         self._progress.update(self.__download_task, total=len(todo))
         await asyncio.gather(*todo)
 
-    async def close(self):
+    async def close(self) -> None:
         await self._session.close()
 
 
@@ -234,7 +236,7 @@ class FileManager:
         self._config = config
         self.__setup()
 
-    def __setup(self):
+    def __setup(self) -> None:
         self._config.CACHE_FOLDER.mkdir(exist_ok=True)
         self._config.HTML_FOLDER.mkdir(exist_ok=True)
         self._config.HTML_CHAPTER.mkdir(exist_ok=True)
@@ -244,7 +246,7 @@ class FileManager:
         self._config.ERROR_LOG.touch()
 
     @property
-    def chapter_folders(self):
+    def chapter_folders(self) -> list[Path]:
         chapter_folders = sorted(
             self._config.HTML_CHAPTER.iterdir(),
             key=lambda f: namesort(f.stem.split("Chapter")[1]),
@@ -261,8 +263,8 @@ class FileManager:
             pdf_files = [pdf_chapter / f"{src_f.stem}.pdf" for src_f in htmls]
             yield pdf_files
 
-    def sorted_dir_pairs(self) -> list[tuple[Path, Path]]:
-        res: list[tuple[Path, Path]] = []
+    def sorted_dir_pairs(self) -> SrcDstPairs:
+        res: SrcDstPairs = []
         for chapter_folder in self.chapter_folders:
             pdf_chapter = self._config.PDF_CHAPTER / chapter_folder.name
             pdf_chapter.mkdir(exist_ok=True)
@@ -277,7 +279,7 @@ class FileManager:
         return res
 
     def convert_failed_htmls(self):
-        res = []
+        res: SrcDstPairs = []
         error_logs = self._config.ERROR_LOG.read_text()
         for error_log in error_logs.split():
             src_f = Path(error_log.strip())
@@ -327,7 +329,7 @@ class Application:
     async def download_chapters(self):
         await self._dl_service.download_chapters(self._config.HTML_CHAPTER)
 
-    def _convert_to_pdf(self, dir_pairs: list[tuple[Path, Path]]):
+    def _convert_to_pdf(self, dir_pairs: SrcDstPairs):
         convert_task = self._progress.add_task("[green]Converting HTMLs...")
         res: list[tuple[int, Path, Path]] = []
 
@@ -346,7 +348,7 @@ class Application:
             self._progress.update(convert_task, advance=1)
         return res
 
-    def convert_and_retry(self, dir_pairs: list[tuple[Path, Path]]):
+    def convert_and_retry(self, dir_pairs: SrcDstPairs):
         fail_filter = lambda res: [
             (src_f, dst_f) for flag, src_f, dst_f in res if flag == 1
         ]
@@ -415,7 +417,7 @@ class Application:
         )
 
         if self.application_succeeded():
-            # self._file_mgr.remove_cached()
+            self._file_mgr.remove_cached()
             self.__task_succeed = True
 
 
