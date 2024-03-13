@@ -2,7 +2,7 @@
 
 ## Disclaimer
 
-All content comes from [learncpp.com](https://learncpp.com), since it specifically states that pdf version should be spread out and people should instead make pdf out of their own, hence this tool
+All content comes from [learncpp.com](https://learncpp.com), since it specifically states that a pdf version should not be spread out by anyone and people should instead make pdf on their own, hence this tool is created
 
 ## Usage
 
