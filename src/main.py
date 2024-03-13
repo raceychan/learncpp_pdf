@@ -39,8 +39,13 @@ class Config:
     def from_env(cls, env_file: Path = Path.cwd() / ".env"):
         values = dotenv_values(env_file)
         for k, v in values.items():
-            if k in cls.__annotations__:
-                values[k] = cls.__annotations__[k](v)
+            if val_type := cls.__annotations__.get(k):
+                try:
+                    values[k] = val_type(v)
+                except ValueError as e:
+                    raise ValueError(
+                        f"Invalid value for {k}, make sure it can be parsed as {val_type}"
+                    )
         return cls(**values)
 
 
