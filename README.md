@@ -27,3 +27,5 @@ make install && make run
 ## Features
 
 - Ultra fast, utilize concurrency for scraping and parallel for making PDF, the whole process is expected to finish within a few minutes.
+- Rich cli interface showing realtime progress of the application
+- Cached on fail, you can just re-run the application without worrying about redundant IO or calcualtion.
