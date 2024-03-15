@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import os
 import shutil
@@ -25,6 +26,8 @@ class Config:
     DOWNLOAD_CONCURRENT_MAX: int = 200
     COMPUTE_PROCESS_MAX: int = os.cpu_count() or 1
     PDF_CONVERTION_MAX_RETRY: int = 3
+    BOOK_NAME: str = "learncpp.pdf"
+    REMOVE_CACHE: bool = False
 
     LEARNCPP: str = "https://www.learncpp.com"
     PROJECT_ROOT: Path = Path(__file__).parent.parent
@@ -326,6 +329,9 @@ class Application:
                 f"Application interrupted due to unknown error, check {self._config.ERROR_LOG} for missing chapters"
             )
 
+    def succeed(self):
+        self.__task_succeed = True
+
     async def download_chapters(self):
         await self._dl_service.download_chapters(self._config.HTML_CHAPTER)
 
@@ -348,11 +354,11 @@ class Application:
             self._progress.update(convert_task, advance=1)
         return res
 
-    def convert_and_retry(self, dir_pairs: SrcDstPairs):
+    def convert_and_retry(self):
         fail_filter = lambda res: [
             (src_f, dst_f) for flag, src_f, dst_f in res if flag == 1
         ]
-        res = self._convert_to_pdf(dir_pairs)
+        res = self._convert_to_pdf(self._file_mgr.sorted_dir_pairs())
         for _ in range(self._config.PDF_CONVERTION_MAX_RETRY):
             if not res:
                 break
@@ -393,11 +399,14 @@ class Application:
 
         return merged
 
-    def merging_chapters(self, merging_folder: Path, res_path: Path):
-        merged = self._merging_pdfs(merging_folder)
-        if res_path.exists():
-            return res_path
-        learncpp = merge_chapters(merged, res_path)
+    def merging_chapters(self):
+        bookfile = self._config.PROJECT_ROOT / self._config.BOOK_NAME
+        if bookfile.exists():
+            return bookfile
+        merged = self._merging_pdfs(
+            self._config.PDF_MERGED_CHAPTER_FOLDER,
+        )
+        learncpp = merge_chapters(merged, bookfile)
         return learncpp
 
     def application_succeeded(self):
@@ -410,15 +419,22 @@ class Application:
 
     async def run(self):
         await self.download_chapters()
-        self.convert_and_retry(self._file_mgr.sorted_dir_pairs())
-        self.merging_chapters(
-            self._config.PDF_MERGED_CHAPTER_FOLDER,
-            self._config.PROJECT_ROOT / "learncpp.pdf",
-        )
+        self.convert_and_retry()
+        self.merging_chapters()
 
         if self.application_succeeded():
-            self._file_mgr.remove_cached()
-            self.__task_succeed = True
+            # self._file_mgr.remove_cached()
+            self.succeed()
+
+    async def cli(self, args: argparse.Namespace):
+        if args.download:
+            await self.download_chapters()
+        elif args.convert:
+            self.convert_and_retry()
+        elif args.merge:
+            self.merging_chapters()
+        else:
+            await self.run()
 
 
 def sessoin_factory():
@@ -449,11 +465,49 @@ def app_factory(config: Config):
     return app
 
 
+def parse_args() -> argparse.Namespace:
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "-D",
+        "--download",
+        dest="download",
+        help="Downloading articles from learcpp.com",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "-C",
+        "--convert",
+        dest="convert",
+        help="Converting downloaded htmls to pdfs",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "-M", "--merge", help="Merging Chapters into a single book", action="store_true"
+    )
+
+    args = parser.parse_args()
+    return args
+
+
 async def main():
+    args = parse_args()
     config = Config.from_env()
-    app = app_factory(config)
-    async with app:
-        await app.run()
+    async with app_factory(config) as app:
+        if args.download:
+            await app.download_chapters()
+            app.succeed()
+        elif args.convert:
+            app.convert_and_retry()
+            app.succeed()
+        elif args.merge:
+            app.merging_chapters()
+            app.succeed()
+        else:
+            await app.run()
 
 
 if __name__ == "__main__":
