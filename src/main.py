@@ -4,7 +4,6 @@ import os
 import shutil
 import typing as ty
 from dataclasses import dataclass
-from functools import cached_property
 from multiprocessing.pool import Pool
 from pathlib import Path
 
@@ -307,6 +306,7 @@ class Application:
         file_mgr: FileManager,
         progress: Progress,
         worker_pool: Pool,
+        use_cache: bool = False,
     ):
         self._bookfile = bookfile
         self._html_chapter_folder = html_chapter_folder
@@ -317,6 +317,7 @@ class Application:
         self._file_mgr = file_mgr
         self._progress = progress
         self._worker_pool = worker_pool
+        self._use_cache = use_cache
         self.__task_succeed = False
 
     async def __aenter__(self):
@@ -433,7 +434,7 @@ class Application:
                 self.merge_chapters()
 
         if self.application_succeeded():
-            # self._file_mgr.remove_cached()
+            self._file_mgr.remove_cached()
             self.succeed()
 
 
