@@ -66,7 +66,7 @@ def namesort(name: str) -> tuple[int, int | str]:
     return (0, int(name)) if name.isdigit() else (1, name)
 
 
-def html_to_pdf(
+def _html_to_pdf(
     html: Path,
     dst_f: Path,
     options: dict = {"enable-local-file-access": ""},
@@ -81,7 +81,7 @@ def html_to_pdf(
         return (1, html, dst_f)
 
 
-def merge_chapters(pdfs: list[Path], out: Path) -> Path:
+def _merge_chapters(pdfs: list[Path], out: Path) -> Path:
     merger = pypdf.PdfWriter()
     for file in pdfs:
         merger.append(file)
@@ -298,22 +298,26 @@ class Application:
     def __init__(
         self,
         *,
-        config: Config,
+        bookfile: Path,
+        html_chapter_folder: Path,
+        pdf_chapter_folder: Path,
+        error_log: Path,
+        pdf_max_retries: int,
         dl_service: DownloadService,
         file_mgr: FileManager,
         progress: Progress,
         worker_pool: Pool,
     ):
-        self._config = config
+        self._bookfile = bookfile
+        self._html_chapter_folder = html_chapter_folder
+        self._pdf_chapter_folder = pdf_chapter_folder
+        self._error_log = error_log
+        self._pdf_max_retries = pdf_max_retries
         self._dl_service = dl_service
         self._file_mgr = file_mgr
         self._progress = progress
         self._worker_pool = worker_pool
         self.__task_succeed = False
-
-    @cached_property
-    def config(self):
-        return self._config
 
     async def __aenter__(self):
         self._progress.__enter__()
@@ -326,14 +330,14 @@ class Application:
             logger.success("Application suceeded and now exiting")
         else:
             logger.error(
-                f"Application interrupted due to unknown error, check {self._config.ERROR_LOG} for missing chapters"
+                f"Application interrupted due to unknown error, check {self._error_log} for missing chapters"
             )
 
     def succeed(self):
         self.__task_succeed = True
 
     async def download_chapters(self):
-        await self._dl_service.download_chapters(self._config.HTML_CHAPTER)
+        await self._dl_service.download_chapters(self._html_chapter_folder)
 
     def _convert_to_pdf(self, dir_pairs: SrcDstPairs):
         convert_task = self._progress.add_task("[green]Converting HTMLs...")
@@ -345,7 +349,7 @@ class Application:
             return res
 
         tasks = [
-            self._worker_pool.apply_async(html_to_pdf, args=(src_f, dst_f))
+            self._worker_pool.apply_async(_html_to_pdf, args=(src_f, dst_f))
             for src_f, dst_f in dir_pairs
         ]
         self._progress.update(convert_task, total=len(tasks))
@@ -355,21 +359,19 @@ class Application:
         return res
 
     def convert_and_retry(self):
-        fail_filter = lambda res: [
-            (src_f, dst_f) for flag, src_f, dst_f in res if flag == 1
-        ]
+        fail_filter = lambda res: [(src_f, dst_f) for flag, src_f, dst_f in res if flag]
         res = self._convert_to_pdf(self._file_mgr.sorted_dir_pairs())
-        for _ in range(self._config.PDF_CONVERTION_MAX_RETRY):
+        for _ in range(self._pdf_max_retries):
             if not res:
                 break
             res = self._convert_to_pdf(fail_filter(res))
         else:
             failed = fail_filter(res)
             for src_f, _ in failed:
-                append_error(self._config.ERROR_LOG, str(src_f))
+                append_error(self._error_log, str(src_f))
 
             self._progress.log(
-                f"{len(failed)} htmls can't be converted after retries, check {self._config.ERROR_LOG} for details"
+                f"{len(failed)} htmls can't be converted after retries, check {self._error_log} for details"
             )
 
     def _merging_pdfs(self, merging_folder: Path) -> list[Path]:
@@ -383,7 +385,9 @@ class Application:
             if dst_f.exists():
                 merged.append(dst_f)
                 continue
-            task = self._worker_pool.apply_async(merge_chapters, args=(pdf_dirs, dst_f))
+            task = self._worker_pool.apply_async(
+                _merge_chapters, args=(pdf_dirs, dst_f)
+            )
             tasks.append(task)
 
         if not tasks:
@@ -399,42 +403,38 @@ class Application:
 
         return merged
 
-    def merging_chapters(self):
-        bookfile = self._config.PROJECT_ROOT / self._config.BOOK_NAME
+    def merge_chapters(self):
+        bookfile = self._bookfile
         if bookfile.exists():
             return bookfile
-        merged = self._merging_pdfs(
-            self._config.PDF_MERGED_CHAPTER_FOLDER,
-        )
-        learncpp = merge_chapters(merged, bookfile)
+        merged = self._merging_pdfs(self._pdf_chapter_folder)
+        learncpp = _merge_chapters(merged, bookfile)
         return learncpp
 
     def application_succeeded(self):
-        errors = self._config.ERROR_LOG.read_text()
+        errors = self._error_log.read_text()
         return not errors
 
     async def close(self):
         self._worker_pool.close()
         await self._dl_service.close()
 
-    async def run(self):
-        await self.download_chapters()
-        self.convert_and_retry()
-        self.merging_chapters()
+    async def run(self, args: argparse.Namespace | None = None):
+        if not args or args.all:
+            await self.download_chapters()
+            self.convert_and_retry()
+            self.merge_chapters()
+        else:
+            if args.download:
+                await self.download_chapters()
+            if args.convert:
+                self.convert_and_retry()
+            if args.merge:
+                self.merge_chapters()
 
         if self.application_succeeded():
             # self._file_mgr.remove_cached()
             self.succeed()
-
-    async def cli(self, args: argparse.Namespace):
-        if args.download:
-            await self.download_chapters()
-        elif args.convert:
-            self.convert_and_retry()
-        elif args.merge:
-            self.merging_chapters()
-        else:
-            await self.run()
 
 
 def sessoin_factory():
@@ -444,7 +444,7 @@ def sessoin_factory():
 
 
 def app_factory(config: Config):
-    sems = asyncio.Semaphore(config.DOWNLOAD_CONCURRENT_MAX)
+    sems = asyncio.Semaphore(value=config.DOWNLOAD_CONCURRENT_MAX)
     progress = Progress()
     dl_service = DownloadService(
         session=sessoin_factory(),
@@ -453,10 +453,14 @@ def app_factory(config: Config):
         progress=progress,
     )
     file_mgr = FileManager(config=config)
-    pool = Pool(config.COMPUTE_PROCESS_MAX)
+    pool = Pool(processes=config.COMPUTE_PROCESS_MAX)
 
     app = Application(
-        config=config,
+        bookfile=config.PROJECT_ROOT / config.BOOK_NAME,
+        html_chapter_folder=config.HTML_CHAPTER,
+        pdf_chapter_folder=config.PDF_MERGED_CHAPTER_FOLDER,
+        error_log=config.ERROR_LOG,
+        pdf_max_retries=config.PDF_CONVERTION_MAX_RETRY,
         dl_service=dl_service,
         file_mgr=file_mgr,
         progress=progress,
@@ -466,7 +470,6 @@ def app_factory(config: Config):
 
 
 def parse_args() -> argparse.Namespace:
-
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -488,26 +491,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-M", "--merge", help="Merging Chapters into a single book", action="store_true"
     )
+    parser.add_argument(
+        "-A", "--all", help="Download, convert and merge", action="store_true"
+    )
 
     args = parser.parse_args()
     return args
 
 
 async def main():
-    args = parse_args()
     config = Config.from_env()
     async with app_factory(config) as app:
-        if args.download:
-            await app.download_chapters()
-            app.succeed()
-        elif args.convert:
-            app.convert_and_retry()
-            app.succeed()
-        elif args.merge:
-            app.merging_chapters()
-            app.succeed()
-        else:
-            await app.run()
+        await app.run(parse_args())
 
 
 if __name__ == "__main__":
