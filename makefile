@@ -1,4 +1,7 @@
+PIXI_PATH := ~/.pixi/bin/pixi
+
 install:
-	curl -fsSL https://pixi.sh/install.sh | bash ; pixi install
+	curl -fsSL https://pixi.sh/install.sh | bash ; $(PIXI_PATH) install
+
 run:
-	pixi run python -m src.main
+	$(PIXI_PATH) run python -m book

@@ -33,13 +33,14 @@ You can create a '.env' file under the project root, the program will read them.
 | DOWNLOAD_CONCURRENT_MAX |int | 200 |
 | COMPUTE_PROCESS_MAX | int | os.cpu_count() |
 | PDF_CONVERTION_MAX_RETRY | int | 3 |
+| BOOK_NAME | str | 'learncpp.pdf |
+| REMOVE_CACHE_ON_SUCCESS | bool | False |
 
 ## Features
 
 - Ultra fast, utilize concurrency for scraping and parallel for making PDF, the whole process is expected to finish within a few minutes.
 - Rich cli interface showing realtime progress of the application
 - Cache on fail, you can just re-run the application without worrying about redundant IO or calcualtion.
-
 
 ## Alternatives
 

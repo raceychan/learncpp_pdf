@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import os
 import shutil
+import sys
 import typing as ty
 from dataclasses import dataclass
 from multiprocessing.pool import Pool
@@ -20,13 +21,19 @@ frozen = dataclass(frozen=True, slots=True, kw_only=True)
 type SrcDstPairs = list[tuple[Path, Path]]
 
 
+class _SENTINEL: ...
+
+
+SENTINEL = _SENTINEL()
+
+
 @frozen
 class Config:
     DOWNLOAD_CONCURRENT_MAX: int = 200
     COMPUTE_PROCESS_MAX: int = os.cpu_count() or 1
     PDF_CONVERTION_MAX_RETRY: int = 3
     BOOK_NAME: str = "learncpp.pdf"
-    REMOVE_CACHE: bool = False
+    REMOVE_CACHE_ON_SUCCESS: bool = False
 
     LEARNCPP: str = "https://www.learncpp.com"
     PROJECT_ROOT: Path = Path(__file__).parent.parent
@@ -221,11 +228,11 @@ class DownloadService:
                     continue
                 coro = self.download_chapter(chapter.link, dst_f)
                 todo.add(coro)
-
         if not todo:
             self._progress.log("Using cached htmls, skip download")
             self._progress.remove_task(self.__download_task)
             return
+
         self._progress.update(self.__download_task, total=len(todo))
         await asyncio.gather(*todo)
 
@@ -306,7 +313,7 @@ class Application:
         file_mgr: FileManager,
         progress: Progress,
         worker_pool: Pool,
-        use_cache: bool = False,
+        remove_cache_on_success: bool = False,
     ):
         self._bookfile = bookfile
         self._html_chapter_folder = html_chapter_folder
@@ -317,7 +324,7 @@ class Application:
         self._file_mgr = file_mgr
         self._progress = progress
         self._worker_pool = worker_pool
-        self._use_cache = use_cache
+        self._remove_cache_on_success = remove_cache_on_success
         self.__task_succeed = False
 
     async def __aenter__(self):
@@ -407,6 +414,7 @@ class Application:
     def merge_chapters(self):
         bookfile = self._bookfile
         if bookfile.exists():
+            self._progress.log(f"{bookfile} alreasy exists, skip merging")
             return bookfile
         merged = self._merging_pdfs(self._pdf_chapter_folder)
         learncpp = _merge_chapters(merged, bookfile)
@@ -420,8 +428,8 @@ class Application:
         self._worker_pool.close()
         await self._dl_service.close()
 
-    async def run(self, args: argparse.Namespace | None = None):
-        if not args or args.all:
+    async def run(self, args: argparse.Namespace | _SENTINEL = SENTINEL):
+        if isinstance(args, _SENTINEL) or args.all:
             await self.download_chapters()
             self.convert_and_retry()
             self.merge_chapters()
@@ -434,8 +442,9 @@ class Application:
                 self.merge_chapters()
 
         if self.application_succeeded():
-            self._file_mgr.remove_cached()
             self.succeed()
+            if self._remove_cache_on_success:
+                self._file_mgr.remove_cached()
 
 
 def sessoin_factory():
@@ -502,8 +511,9 @@ def parse_args() -> argparse.Namespace:
 
 async def main():
     config = Config.from_env()
+    args = parse_args() if len(sys.argv) > 1 else SENTINEL
     async with app_factory(config) as app:
-        await app.run(parse_args())
+        await app.run(args)
 
 
 if __name__ == "__main__":
