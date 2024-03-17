@@ -38,7 +38,8 @@ You can create a '.env' file under the project root, the program will read them.
 
 ## CLI
 
-You can use cli with following options
+You can use cli with following options to force-redo an action.
+
 ```bash
 python -m book --help
 ```
@@ -46,11 +47,13 @@ python -m book --help
 ```bash
 options:
   -h, --help      show this help message and exit
-  -D, --download  Downloading articles from learcpp.com
-  -C, --convert   Converting downloaded htmls to pdfs
-  -M, --merge     Merging Chapters into a single book
+  -D, --download  Downloading articles from learcpp.com, ignore cache
+  -C, --convert   Converting downloaded htmls to pdfs, ignore cache
+  -M, --merge     Merging Chapters into a single book, ignore cache
   -A, --all       Download, convert and merge
 ```
+
+if not command specified, all actions will be taken.
 
 ## Features
 

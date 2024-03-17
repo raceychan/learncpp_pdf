@@ -215,7 +215,7 @@ class DownloadService:
         dst_f.write_text(res)
         self._progress.update(self.__download_task, advance=1)
 
-    async def download_chapters(self, chapters_folder: Path) -> None:
+    async def download_chapters(self, chapters_folder: Path, use_cache: bool) -> None:
         self.__download_task = self._progress.add_task("[red]Downloading HTMLs...")
         outline = await self.download_outline()
         todo = set()
@@ -224,10 +224,11 @@ class DownloadService:
             table_folder.mkdir(exist_ok=True)
             for chapter in table.chapters:
                 dst_f = table_folder / chapter.filename
-                if dst_f.exists():
+                if use_cache and dst_f.exists():
                     continue
                 coro = self.download_chapter(chapter.link, dst_f)
                 todo.add(coro)
+
         if not todo:
             self._progress.log("Using cached htmls, skip download")
             self._progress.remove_task(self.__download_task)
@@ -272,7 +273,7 @@ class FileManager:
             pdf_files = [pdf_chapter / f"{src_f.stem}.pdf" for src_f in htmls]
             yield pdf_files
 
-    def sorted_dir_pairs(self) -> SrcDstPairs:
+    def sorted_dir_pairs(self, use_cache: bool) -> SrcDstPairs:
         res: SrcDstPairs = []
         for chapter_folder in self.chapter_folders:
             pdf_chapter = self._config.PDF_CHAPTER / chapter_folder.name
@@ -282,7 +283,7 @@ class FileManager:
             )
             for src_f in htmls:
                 dst_f = pdf_chapter / f"{src_f.stem}.pdf"
-                if dst_f.exists():
+                if use_cache and dst_f.exists():
                     continue
                 res.append((src_f, dst_f))
         return res
@@ -344,8 +345,10 @@ class Application:
     def succeed(self):
         self.__task_succeed = True
 
-    async def download_chapters(self):
-        await self._dl_service.download_chapters(self._html_chapter_folder)
+    async def download_chapters(self, use_cache: bool = False):
+        await self._dl_service.download_chapters(
+            self._html_chapter_folder, use_cache=use_cache
+        )
 
     def _convert_to_pdf(self, dir_pairs: SrcDstPairs):
         convert_task = self._progress.add_task("[green]Converting HTMLs...")
@@ -366,9 +369,9 @@ class Application:
             self._progress.update(convert_task, advance=1)
         return res
 
-    def convert_and_retry(self):
+    def convert_and_retry(self, use_cache: bool = True):
         fail_filter = lambda res: [(src_f, dst_f) for flag, src_f, dst_f in res if flag]
-        res = self._convert_to_pdf(self._file_mgr.sorted_dir_pairs())
+        res = self._convert_to_pdf(self._file_mgr.sorted_dir_pairs(use_cache))
         for _ in range(self._pdf_max_retries):
             if not res:
                 break
@@ -411,9 +414,9 @@ class Application:
 
         return merged
 
-    def merge_chapters(self):
+    def merge_chapters(self, use_cache: bool = True):
         bookfile = self._bookfile
-        if bookfile.exists():
+        if use_cache and bookfile.exists():
             self._progress.log(f"{bookfile} alreasy exists, skip merging")
             return bookfile
         merged = self._merging_pdfs(self._pdf_chapter_folder)
@@ -429,17 +432,21 @@ class Application:
         await self._dl_service.close()
 
     async def run(self, args: argparse.Namespace | _SENTINEL = SENTINEL):
-        if isinstance(args, _SENTINEL) or args.all:
+        if isinstance(args, _SENTINEL):
             await self.download_chapters()
             self.convert_and_retry()
             self.merge_chapters()
+        elif args.all:
+            await self.download_chapters(use_cache=False)
+            self.convert_and_retry(use_cache=False)
+            self.merge_chapters(use_cache=False)
         else:
             if args.download:
-                await self.download_chapters()
+                await self.download_chapters(use_cache=False)
             if args.convert:
-                self.convert_and_retry()
+                self.convert_and_retry(use_cache=False)
             if args.merge:
-                self.merge_chapters()
+                self.merge_chapters(use_cache=False)
 
         if self.application_succeeded():
             self.succeed()
