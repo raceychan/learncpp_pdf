@@ -36,6 +36,22 @@ You can create a '.env' file under the project root, the program will read them.
 | BOOK_NAME | str | 'learncpp.pdf |
 | REMOVE_CACHE_ON_SUCCESS | bool | False |
 
+## CLI
+
+You can use cli with following options
+```bash
+python -m book --help
+```
+
+```bash
+options:
+  -h, --help      show this help message and exit
+  -D, --download  Downloading articles from learcpp.com
+  -C, --convert   Converting downloaded htmls to pdfs
+  -M, --merge     Merging Chapters into a single book
+  -A, --all       Download, convert and merge
+```
+
 ## Features
 
 - Ultra fast, utilize concurrency for scraping and parallel for making PDF, the whole process is expected to finish within a few minutes.
