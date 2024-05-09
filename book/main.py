@@ -405,7 +405,7 @@ class Application:
                 self._file_mgr.append_error(str(src_f))
 
             self._progress.log(
-                f"{len(failed_dirs)} htmls can't be converted after retries, check {self._file_mgr.error_log} for details"
+                f"{len(failed_dirs)} htmls can't be converted after retry, check {self._file_mgr.error_log} for details"
             )
 
     def _merging_pdfs(self, merging_folder: Path) -> list[Path]:
