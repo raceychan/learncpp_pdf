@@ -21,10 +21,10 @@ frozen = dataclass(frozen=True, slots=True, kw_only=True)
 type SrcDstPairs = list[tuple[Path, Path]]
 
 
-class _SENTINEL: ...
+class _Sentinel: ...
 
 
-SENTINEL = _SENTINEL()
+SENTINEL = _Sentinel()
 
 
 @frozen
@@ -46,6 +46,10 @@ class Config:
     PDF_CHAPTER: Path = PDF_FOLDER / HTML_CHAPTER.name
     PDF_MERGED_CHAPTER_FOLDER: Path = PDF_FOLDER / "learncpp"
 
+    @property
+    def BOOK_PATH(self) -> Path:
+        return self.PROJECT_ROOT / self.BOOK_NAME
+
     @classmethod
     def from_env(cls, env_file: Path = Path.cwd() / ".env") -> "Config":
         values = dotenv_values(env_file)
@@ -58,11 +62,6 @@ class Config:
                         f"Invalid value for {k}, make sure it can be parsed as {val_type}"
                     )
         return cls(**values)
-
-
-def append_error(error_log: Path, error_info: str) -> None:
-    with error_log.open(mode="a") as f:
-        f.write(f"{error_info} \n")
 
 
 def namesort(name: str) -> tuple[int, int | str]:
@@ -242,30 +241,45 @@ class DownloadService:
 
 
 class FileManager:
-    def __init__(self, config: Config):
-        self._config = config
+    def __init__(
+        self,
+        cache_folder: Path,
+        html_folder: Path,
+        html_chapter: Path,
+        pdf_folder: Path,
+        pdf_chapter: Path,
+        pdf_merged_chapter_folder: Path,
+        error_log: Path,
+    ):
+        self.cache_folder = cache_folder
+        self.html_folder = html_folder
+        self.html_chapter = html_chapter
+        self.pdf_folder = pdf_folder
+        self.pdf_chapter = pdf_chapter
+        self.pdf_merged_chapter_folder = pdf_merged_chapter_folder
+        self.error_log = error_log
         self.__setup()
 
     def __setup(self) -> None:
-        self._config.CACHE_FOLDER.mkdir(exist_ok=True)
-        self._config.HTML_FOLDER.mkdir(exist_ok=True)
-        self._config.HTML_CHAPTER.mkdir(exist_ok=True)
-        self._config.PDF_FOLDER.mkdir(exist_ok=True)
-        self._config.PDF_CHAPTER.mkdir(exist_ok=True)
-        self._config.PDF_MERGED_CHAPTER_FOLDER.mkdir(exist_ok=True)
-        self._config.ERROR_LOG.touch()
+        self.cache_folder.mkdir(exist_ok=True)
+        self.html_folder.mkdir(exist_ok=True)
+        self.html_chapter.mkdir(exist_ok=True)
+        self.pdf_folder.mkdir(exist_ok=True)
+        self.pdf_chapter.mkdir(exist_ok=True)
+        self.pdf_merged_chapter_folder.mkdir(exist_ok=True)
+        self.error_log.touch()
 
     @property
     def chapter_folders(self) -> list[Path]:
         chapter_folders = sorted(
-            self._config.HTML_CHAPTER.iterdir(),
+            self.html_chapter.iterdir(),
             key=lambda f: namesort(f.stem.split("Chapter")[1]),
         )
         return chapter_folders
 
     def sorted_dst_dirs(self):
         for chapter_folder in self.chapter_folders:
-            pdf_chapter = self._config.PDF_CHAPTER / chapter_folder.name
+            pdf_chapter = self.pdf_chapter / chapter_folder.name
             pdf_chapter.mkdir(exist_ok=True)
             htmls = sorted(
                 chapter_folder.iterdir(), key=lambda h: namesort(h.stem.split("_")[1])
@@ -276,7 +290,7 @@ class FileManager:
     def sorted_dir_pairs(self, use_cache: bool) -> SrcDstPairs:
         res: SrcDstPairs = []
         for chapter_folder in self.chapter_folders:
-            pdf_chapter = self._config.PDF_CHAPTER / chapter_folder.name
+            pdf_chapter = self.pdf_chapter / chapter_folder.name
             pdf_chapter.mkdir(exist_ok=True)
             htmls = sorted(
                 chapter_folder.iterdir(), key=lambda h: namesort(h.stem.split("_")[1])
@@ -290,15 +304,22 @@ class FileManager:
 
     def convert_failed_htmls(self):
         res: SrcDstPairs = []
-        error_logs = self._config.ERROR_LOG.read_text()
+        error_logs = self.error_log.read_text()
         for error_log in error_logs.split():
             src_f = Path(error_log.strip())
-            dst_f = self._config.PDF_CHAPTER / src_f.parent.name / f"{src_f.stem}.pdf"
+            dst_f = self.pdf_chapter / src_f.parent.name / f"{src_f.stem}.pdf"
             res.append((src_f, dst_f))
         return res
 
     def remove_cached(self):
-        shutil.rmtree(self._config.CACHE_FOLDER)
+        shutil.rmtree(self.cache_folder)
+
+    def append_error(self, error_info: str) -> None:
+        with self.error_log.open(mode="a") as f:
+            f.write(f"{error_info} \n")
+
+    def read_errors(self) -> str:
+        return self.error_log.read_text()
 
 
 class Application:
@@ -306,10 +327,7 @@ class Application:
         self,
         *,
         bookfile: Path,
-        html_chapter_folder: Path,
-        pdf_chapter_folder: Path,
-        error_log: Path,
-        pdf_max_retries: int,
+        cvt_max_retries: int,
         dl_service: DownloadService,
         file_mgr: FileManager,
         progress: Progress,
@@ -317,10 +335,7 @@ class Application:
         remove_cache_on_success: bool = False,
     ):
         self._bookfile = bookfile
-        self._html_chapter_folder = html_chapter_folder
-        self._pdf_chapter_folder = pdf_chapter_folder
-        self._error_log = error_log
-        self._pdf_max_retries = pdf_max_retries
+        self._cvt_max_retries = cvt_max_retries
         self._dl_service = dl_service
         self._file_mgr = file_mgr
         self._progress = progress
@@ -339,7 +354,7 @@ class Application:
             logger.success("Application suceeded and now exiting")
         else:
             logger.error(
-                f"Application interrupted due to unknown error, check {self._error_log} for missing chapters"
+                f"Application interrupted due to unknown error, check {self._file_mgr.error_log} for missing chapters"
             )
 
     def succeed(self):
@@ -347,7 +362,7 @@ class Application:
 
     async def download_chapters(self, use_cache: bool = False):
         await self._dl_service.download_chapters(
-            self._html_chapter_folder, use_cache=use_cache
+            self._file_mgr.html_chapter, use_cache=use_cache
         )
 
     def _convert_to_pdf(self, dir_pairs: SrcDstPairs):
@@ -372,17 +387,17 @@ class Application:
     def convert_and_retry(self, use_cache: bool = True):
         fail_filter = lambda res: [(src_f, dst_f) for flag, src_f, dst_f in res if flag]
         res = self._convert_to_pdf(self._file_mgr.sorted_dir_pairs(use_cache))
-        for _ in range(self._pdf_max_retries):
+        for _ in range(self._cvt_max_retries):
             if not res:
                 break
             res = self._convert_to_pdf(fail_filter(res))
         else:
             failed = fail_filter(res)
             for src_f, _ in failed:
-                append_error(self._error_log, str(src_f))
+                self._file_mgr.append_error(str(src_f))
 
             self._progress.log(
-                f"{len(failed)} htmls can't be converted after retries, check {self._error_log} for details"
+                f"{len(failed)} htmls can't be converted after retries, check {self._file_mgr.error_log} for details"
             )
 
     def _merging_pdfs(self, merging_folder: Path) -> list[Path]:
@@ -419,20 +434,19 @@ class Application:
         if use_cache and bookfile.exists():
             self._progress.log(f"{bookfile} alreasy exists, skip merging")
             return bookfile
-        merged = self._merging_pdfs(self._pdf_chapter_folder)
+        merged = self._merging_pdfs(self._file_mgr.pdf_merged_chapter_folder)
         learncpp = _merge_chapters(merged, bookfile)
         return learncpp
 
     def application_succeeded(self):
-        errors = self._error_log.read_text()
-        return not errors
+        return self._file_mgr.read_errors() == ""
 
     async def close(self):
         self._worker_pool.close()
         await self._dl_service.close()
 
-    async def run(self, args: argparse.Namespace | _SENTINEL = SENTINEL):
-        if isinstance(args, _SENTINEL):
+    async def run(self, args: argparse.Namespace | _Sentinel = SENTINEL):
+        if isinstance(args, _Sentinel):
             await self.download_chapters()
             self.convert_and_retry()
             self.merge_chapters()
@@ -454,8 +468,8 @@ class Application:
                 self._file_mgr.remove_cached()
 
 
-def sessoin_factory():
-    # timeout = aiohttp.ClientTimeout(total=60, connect=10)
+def sessoin_factory(timeout: int = 120) -> aiohttp.ClientSession:
+    timeout = aiohttp.ClientTimeout(total=timeout, connect=30)
     session = aiohttp.ClientSession()
     return session
 
@@ -469,15 +483,20 @@ def app_factory(config: Config):
         home_url=config.LEARNCPP,
         progress=progress,
     )
-    file_mgr = FileManager(config=config)
+    file_mgr = FileManager(
+        cache_folder=config.CACHE_FOLDER,
+        html_folder=config.HTML_FOLDER,
+        html_chapter=config.HTML_CHAPTER,
+        pdf_folder=config.PDF_FOLDER,
+        pdf_chapter=config.PDF_CHAPTER,
+        pdf_merged_chapter_folder=config.PDF_MERGED_CHAPTER_FOLDER,
+        error_log=config.ERROR_LOG,
+    )
     pool = Pool(processes=config.COMPUTE_PROCESS_MAX)
 
     app = Application(
-        bookfile=config.PROJECT_ROOT / config.BOOK_NAME,
-        html_chapter_folder=config.HTML_CHAPTER,
-        pdf_chapter_folder=config.PDF_MERGED_CHAPTER_FOLDER,
-        error_log=config.ERROR_LOG,
-        pdf_max_retries=config.PDF_CONVERTION_MAX_RETRY,
+        bookfile=config.BOOK_PATH,
+        cvt_max_retries=config.PDF_CONVERTION_MAX_RETRY,
         dl_service=dl_service,
         file_mgr=file_mgr,
         progress=progress,
