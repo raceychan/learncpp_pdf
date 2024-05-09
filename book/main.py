@@ -80,7 +80,7 @@ def _html_to_pdf(
     post.remove_elements()
     try:
         pdfkit.from_string(post.html, str(dst_f), options=options)
-    except Exception as ge:
+    except OSError as ge:
         return (0, html, dst_f)
     else:
         return (1, html, dst_f)
@@ -277,7 +277,8 @@ class FileManager:
         )
         return chapter_folders
 
-    def sorted_dst_dirs(self):
+    def sorted_dst_dirs(self) -> list[list[Path]]:
+        dst_dirs = []
         for chapter_folder in self.chapter_folders:
             pdf_chapter = self.pdf_chapter / chapter_folder.name
             pdf_chapter.mkdir(exist_ok=True)
@@ -285,10 +286,13 @@ class FileManager:
                 chapter_folder.iterdir(), key=lambda h: namesort(h.stem.split("_")[1])
             )
             pdf_files = [pdf_chapter / f"{src_f.stem}.pdf" for src_f in htmls]
-            yield pdf_files
+            dst_dirs.append(pdf_files)
+        return dst_dirs
 
     def sorted_dir_pairs(self, use_cache: bool) -> SrcDstPairs:
         res: SrcDstPairs = []
+        if not self.chapter_folders:
+            raise ValueError("Missing HTMLs of chapter, please download them first")
         for chapter_folder in self.chapter_folders:
             pdf_chapter = self.pdf_chapter / chapter_folder.name
             pdf_chapter.mkdir(exist_ok=True)
@@ -302,7 +306,7 @@ class FileManager:
                 res.append((src_f, dst_f))
         return res
 
-    def convert_failed_htmls(self):
+    def convert_failed_htmls(self) -> SrcDstPairs:
         res: SrcDstPairs = []
         error_logs = self.error_log.read_text()
         for error_log in error_logs.split():
@@ -311,7 +315,7 @@ class FileManager:
             res.append((src_f, dst_f))
         return res
 
-    def remove_cached(self):
+    def remove_cached(self) -> None:
         shutil.rmtree(self.cache_folder)
 
     def append_error(self, error_info: str) -> None:
@@ -343,11 +347,11 @@ class Application:
         self._remove_cache_on_success = remove_cache_on_success
         self.__task_succeed = False
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> ty.Self:
         self._progress.__enter__()
         return self
 
-    async def __aexit__(self, exc, excval, traceback):
+    async def __aexit__(self, exc, excval, traceback) -> None:
         self._progress.__exit__(exc, excval, traceback)
         await self.close()
         if self.__task_succeed:
@@ -357,15 +361,15 @@ class Application:
                 f"Application interrupted due to unknown error, check {self._file_mgr.error_log} for missing chapters"
             )
 
-    def succeed(self):
+    def succeed(self) -> None:
         self.__task_succeed = True
 
-    async def download_chapters(self, use_cache: bool = False):
+    async def download_chapters(self, use_cache: bool = True) -> None:
         await self._dl_service.download_chapters(
             self._file_mgr.html_chapter, use_cache=use_cache
         )
 
-    def _convert_to_pdf(self, dir_pairs: SrcDstPairs):
+    def _convert_to_pdf(self, dir_pairs: SrcDstPairs) -> list[tuple[int, Path, Path]]:
         convert_task = self._progress.add_task("[green]Converting HTMLs...")
         res: list[tuple[int, Path, Path]] = []
 
@@ -384,28 +388,37 @@ class Application:
             self._progress.update(convert_task, advance=1)
         return res
 
-    def convert_and_retry(self, use_cache: bool = True):
-        fail_filter = lambda res: [(src_f, dst_f) for flag, src_f, dst_f in res if flag]
-        res = self._convert_to_pdf(self._file_mgr.sorted_dir_pairs(use_cache))
-        for _ in range(self._cvt_max_retries):
-            if not res:
-                break
-            res = self._convert_to_pdf(fail_filter(res))
-        else:
-            failed = fail_filter(res)
-            for src_f, _ in failed:
+    def _failed_cvt_filter(self, results: list[tuple[int, Path, Path]]) -> SrcDstPairs:
+        return [(src_f, dst_f) for _, src_f, dst_f in results if not dst_f.exists()]
+
+    def convert_and_retry(self, use_cache: bool = True) -> None:
+        results = self._convert_to_pdf(self._file_mgr.sorted_dir_pairs(use_cache))
+        failed_dirs = self._failed_cvt_filter(results)
+        retries = 0
+
+        while failed_dirs and retries < self._cvt_max_retries:
+            failed_dirs = self._failed_cvt_filter(self._convert_to_pdf(failed_dirs))
+            retries += 1
+
+        if failed_dirs:
+            for src_f, _ in failed_dirs:
                 self._file_mgr.append_error(str(src_f))
 
             self._progress.log(
-                f"{len(failed)} htmls can't be converted after retries, check {self._file_mgr.error_log} for details"
+                f"{len(failed_dirs)} htmls can't be converted after retries, check {self._file_mgr.error_log} for details"
             )
 
     def _merging_pdfs(self, merging_folder: Path) -> list[Path]:
+        dst_dirs = self._file_mgr.sorted_dst_dirs()
+        if not dst_dirs:
+            raise ValueError("Missing HTMLs to convert, download them first")
+
         merging_task = self._progress.add_task("[cyan]Merging PDFs...")
 
         tasks = []
         merged: list[Path] = []
-        for pdf_dirs in self._file_mgr.sorted_dst_dirs():
+
+        for pdf_dirs in dst_dirs:
             chapter_idx = pdf_dirs[0].parent.stem.split("Chapter")[1]
             dst_f = merging_folder / f"chapter_{chapter_idx}.pdf"
             if dst_f.exists():
