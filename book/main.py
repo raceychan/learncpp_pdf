@@ -117,7 +117,7 @@ def _merge_chapters(pdfs: list[Path], out: Path) -> Path:
         except pypdf.errors.PdfStreamError as pe:
             file.unlink()
             logger.error(
-                f"Removed corrupted PDF {file}, please re-run the program to convert it again"
+                f"Failed to merge {file} as the file is corrupted, please re-run the program to convert it again"
             )
 
     merger.write(out)
@@ -428,6 +428,9 @@ class Application:
         retries = 0
 
         while failed_dirs and retries < self._cvt_max_retries:
+            self._progress.log(
+                f"{len(failed_dirs)} htmls can't be converted, {self._cvt_max_retries - retries} retries left"
+            )
             failed_dirs = self._failed_cvt_filter(self._convert_to_pdf(failed_dirs))
             retries += 1
 
@@ -484,6 +487,7 @@ class Application:
             return bookfile
         merged = self._merging_pdfs(self._file_mgr.pdf_merged_chapter_folder)
         learncpp = _merge_chapters(merged, bookfile)
+        self._file_mgr.pdf_merged_chapter_folder.rmdir()
         return learncpp
 
     def application_succeeded(self):
