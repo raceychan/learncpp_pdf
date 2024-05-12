@@ -383,14 +383,16 @@ class Application:
         return self
 
     async def __aexit__(self, exc, excval, traceback) -> None:
-        self._progress.__exit__(exc, excval, traceback)
         await self.close()
+        self._progress.log("Cleaning up ...")
         if self.__task_succeed:
-            logger.success("Application suceeded and now exiting")
+            self._progress.console.rule("[green]Application succeeded")
         else:
-            logger.error(
-                f"Application interrupted due to unknown error, check {self._file_mgr.error_log} for missing chapters"
+            self._progress.console.rule(f"[red]Application Failed")
+            self._progress.console.log(
+                f"[red]See details in [bold]{self._file_mgr.error_log}[/bold]",
             )
+        self._progress.__exit__(exc, excval, traceback)
 
     def succeed(self) -> None:
         self.__task_succeed = True
@@ -439,7 +441,7 @@ class Application:
                 self._file_mgr.append_error(str(src_f))
 
             self._progress.log(
-                f"{len(failed_dirs)} htmls can't be converted after retry, check {self._file_mgr.error_log} for details"
+                f"{len(failed_dirs)} htmls can't be converted after retry, check {self._file_mgr.error_log} for failed htmls"
             )
 
     def _merging_pdfs(self, merging_folder: Path) -> list[Path]:
@@ -483,7 +485,7 @@ class Application:
     def merge_chapters(self, use_cache: bool = True):
         bookfile = self._bookfile
         if use_cache and bookfile.exists():
-            self._progress.log(f"{bookfile} alreasy exists, skip merging")
+            self._progress.log(f"Book '{bookfile.name}' alreasy exists, skip merging")
             return bookfile
         merged = self._merging_pdfs(self._file_mgr.pdf_merged_chapter_folder)
         learncpp = _merge_chapters(merged, bookfile)
