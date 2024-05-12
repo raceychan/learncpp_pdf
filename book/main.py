@@ -513,10 +513,13 @@ class Application:
         else:
             if args.download:
                 await self.download_chapters(use_cache=False)
+                self._progress.log("Chapters downloaded")
             if args.convert:
                 self.convert_and_retry(use_cache=False)
+                self._progress.log("HTMLs Converted")
             if args.merge:
                 self.merge_chapters(use_cache=False)
+                self._progress.log("PDFs merged")
             if args.rmcache:
                 self._file_mgr.remove_cache()
                 self._progress.log("Cache removed")

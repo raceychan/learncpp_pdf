@@ -4,6 +4,8 @@
 
 All content directly comes from the [learncpp.com](https://learncpp.com) website, no content changed, some decorative elements and the comment section is removed for better readability.
 
+> *Please consider support the website here [learncpp-about](https://www.learncpp.com/about/)*
+
 since it specifically states that a pdf version should not be spread out by anyone and people should instead make pdf on their own, this tool is hence created.
 
 ## Usage
@@ -68,9 +70,12 @@ if not command specified, all actions will be taken(cache would be applied to av
 
 ## Use-Tips
 
-It is possible that the download process and/or the convert process might fail due to various reason, for example, the target site is overloaded, in most cases, you can simply just re-run the program to solve these problems.
-
+- It is possible that the download process and/or the convert process might fail due to various reason, for example, the target site is overloaded, in most cases, you can simply just re-run the program to solve these problems.
 However, if you do think it is a bug, always feel free to post an issue.
+
+- You might want to compress the pdf book for performance and storage.
+check [pdfsizeopt](https://github.com/pts/pdfsizeopt) out 
+
 
 ## Features
 
