@@ -36,6 +36,8 @@ You can create a '.env' file under the project root, the program will read them.
 | BOOK_NAME | str | 'learncpp.pdf |
 | REMOVE_CACHE_ON_SUCCESS | bool | False |
 
+Note: setting DOWNLOAD_CONCURRENT_MAX to higher number might boost download speed, but some requests might fail as it exerts more pressure on the website
+
 ## CLI
 
 You can use cli with following options to force-redo an action.
@@ -53,7 +55,13 @@ options:
   -A, --all       Download, convert and merge
 ```
 
-if not command specified, all actions will be taken.
+if not command specified, all actions will be taken(cache would be applied to avoid uncessary requests).
+
+## Use-Tips
+
+It is possible that the download process and convert process might fail due to various reason, for example, the target site is overloaded with requests, in most cases, you can simply just go ahead and re-run the program.
+
+However, if you do think it is a bug, always feel free to post an issue.
 
 ## Features
 

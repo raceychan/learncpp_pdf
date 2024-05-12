@@ -11,6 +11,7 @@ from pathlib import Path
 import aiohttp
 import pdfkit
 import pypdf
+import pypdf.errors
 from dotenv import dotenv_values
 from loguru import logger
 from rich.progress import Progress
@@ -25,6 +26,24 @@ class _Sentinel: ...
 
 
 SENTINEL = _Sentinel()
+
+
+class ProcessingError(Exception): ...
+
+
+class HTMLParsingError(ProcessingError): ...
+
+
+class DownloadError(ProcessingError): ...
+
+
+class MergingError(ProcessingError): ...
+
+
+class ConvertionError(ProcessingError): ...
+
+
+class FileMissingError(ProcessingError): ...
 
 
 @frozen
@@ -89,7 +108,17 @@ def _html_to_pdf(
 def _merge_chapters(pdfs: list[Path], out: Path) -> Path:
     merger = pypdf.PdfWriter()
     for file in pdfs:
-        merger.append(file)
+        try:
+            merger.append(file)
+        except FileNotFoundError as fe:
+            raise MergingError(
+                f"Failed to find {file}, make sure it exists or re-run the program to download"
+            ) from fe
+        except pypdf.errors.PdfStreamError as pe:
+            file.unlink()
+            logger.error(
+                f"Removed corrupted PDF {file}, please re-run the program to convert it again"
+            )
 
     merger.write(out)
     merger.close()
@@ -143,7 +172,7 @@ class Chapter:
             0
         ].attributes["href"]
         if not link:
-            raise ValueError(f"Invalid link: {link}")
+            raise HTMLParsingError(f"Invalid link for {title}: {link}")
         return cls(no=chapter_no, title=title, link=link)
 
 
@@ -159,7 +188,7 @@ class ChapterTable:
             0
         ].attributes["name"]
         if not table_name:
-            raise ValueError(f"Invalid table name: {table_name}")
+            raise HTMLParsingError(f"Invalid table name: {table_name}")
         chapter_nodes = table_node.select("div.lessontable-row").matches
         chapters = tuple(
             Chapter.from_node(chapter_node) for chapter_node in chapter_nodes
@@ -180,7 +209,7 @@ class OutLinePage:
     def parse_html(cls, text: str) -> "OutLinePage":
         outline_dom = LexborHTMLParser(text)
         if not outline_dom.body:
-            raise ValueError("Failed to parse html")
+            raise HTMLParsingError("Failed to parse the html of the outline page")
         content = outline_dom.body.select("div.entry-content").matches[0]
         return cls(root=content)
 
@@ -292,7 +321,9 @@ class FileManager:
     def sorted_dir_pairs(self, use_cache: bool) -> SrcDstPairs:
         res: SrcDstPairs = []
         if not self.chapter_folders:
-            raise ValueError("Missing HTMLs of chapter, please download them first")
+            raise FileMissingError(
+                "Missing HTMLs of every chapters, please download them first"
+            )
         for chapter_folder in self.chapter_folders:
             pdf_chapter = self.pdf_chapter / chapter_folder.name
             pdf_chapter.mkdir(exist_ok=True)
@@ -411,7 +442,7 @@ class Application:
     def _merging_pdfs(self, merging_folder: Path) -> list[Path]:
         dst_dirs = self._file_mgr.sorted_dst_dirs()
         if not dst_dirs:
-            raise ValueError("Missing HTMLs to convert, download them first")
+            raise FileMissingError("Missing HTMLs to convert, download them first")
 
         merging_task = self._progress.add_task("[cyan]Merging PDFs...")
 
@@ -437,7 +468,11 @@ class Application:
         self._progress.update(merging_task, total=len(tasks))
 
         for task in tasks:
-            merged.append(task.get())
+            try:
+                res = task.get()
+            except Exception as e:
+                raise MergingError(f"Failed to merge pdf: {e}")
+            merged.append(res)
             self._progress.update(merging_task, advance=1)
 
         return merged
