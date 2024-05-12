@@ -66,7 +66,7 @@ if not command specified, all actions will be taken(cache would be applied to av
 
 ## Use-Tips
 
-It is possible that the download process and convert process might fail due to various reason, for example, the target site is overloaded with requests, in most cases, you can simply just go ahead and re-run the program.
+It is possible that the download process and/or the convert process might fail due to various reason, for example, the target site is overloaded, in most cases, you can simply just re-run the program to solve these problems.
 
 However, if you do think it is a bug, always feel free to post an issue.
 
