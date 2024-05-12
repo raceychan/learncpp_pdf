@@ -346,7 +346,7 @@ class FileManager:
             res.append((src_f, dst_f))
         return res
 
-    def remove_cached(self) -> None:
+    def remove_cache(self) -> None:
         shutil.rmtree(self.cache_folder)
 
     def append_error(self, error_info: str) -> None:
@@ -493,7 +493,9 @@ class Application:
         return learncpp
 
     def application_succeeded(self):
-        return self._file_mgr.read_errors() == ""
+        return not self._file_mgr.error_log.exists() or (
+            self._file_mgr.read_errors() == ""
+        )
 
     async def close(self):
         self._worker_pool.close()
@@ -515,11 +517,14 @@ class Application:
                 self.convert_and_retry(use_cache=False)
             if args.merge:
                 self.merge_chapters(use_cache=False)
+            if args.rmcache:
+                self._file_mgr.remove_cache()
+                self._progress.log("Cache removed")
 
         if self.application_succeeded():
             self.succeed()
             if self._remove_cache_on_success:
-                self._file_mgr.remove_cached()
+                self._file_mgr.remove_cache()
 
 
 def sessoin_factory(timeout: int = 120) -> aiohttp.ClientSession:
@@ -584,6 +589,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-A", "--all", help="Download, convert and merge", action="store_true"
     )
+    parser.add_argument("-R", "--rmcache", help="Remove cache", action="store_true")
 
     args = parser.parse_args()
     return args

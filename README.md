@@ -52,7 +52,14 @@ options:
   -D, --download  Downloading articles from learcpp.com, ignore cache
   -C, --convert   Converting downloaded htmls to pdfs, ignore cache
   -M, --merge     Merging Chapters into a single book, ignore cache
+  -R, --rmcache   Remove the cache folder
   -A, --all       Download, convert and merge
+```
+
+example: re-run the convert process and remove the cache folder
+
+```bash
+python -m book --convert --rmcache
 ```
 
 if not command specified, all actions will be taken(cache would be applied to avoid uncessary requests).
