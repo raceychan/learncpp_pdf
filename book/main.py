@@ -253,8 +253,8 @@ class DownloadService:
                 dst_f = table_folder / chapter.filename
                 if use_cache and dst_f.exists():
                     continue
-                coro = self.download_chapter(chapter.link, dst_f)
-                todo.add(coro)
+                task = asyncio.create_task(self.download_chapter(chapter.link, dst_f))
+                todo.add(task)
 
         if not todo:
             self._progress.log("Using cached htmls, skip download")
@@ -262,7 +262,13 @@ class DownloadService:
 
         self.__download_task = self._progress.add_task("[red]Downloading HTMLs...")
         self._progress.update(self.__download_task, total=len(todo))
-        await asyncio.gather(*todo)
+
+        done, _ = await asyncio.wait(todo, timeout=None)
+        for t in done:
+            if (e := t.exception()) is None:
+                continue
+            raise DownloadError(e)
+        self._progress.log(f"Finished downloading {len(todo)} HTMLs")
 
     async def __aenter__(self) -> "DownloadService":
         await self._session.__aenter__()
@@ -420,12 +426,11 @@ class Application:
             self._progress.log("Using cached pdfs, skip converting")
             return results
 
-        convert_task = self._progress.add_task("[green]Converting HTMLs...")
-
         tasks = [
             self._worker_pool.apply_async(_html_to_pdf, args=(src_f, dst_f))
             for src_f, dst_f in dir_pairs
         ]
+        convert_task = self._progress.add_task("[green]Converting HTMLs...")
         self._progress.update(convert_task, total=len(tasks))
         for task in tasks:
             res = task.get(timeout=self._worker_timeout)
