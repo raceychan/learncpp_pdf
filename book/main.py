@@ -94,15 +94,15 @@ def _html_to_pdf(
     html: Path,
     dst_f: Path,
     options: dict = {"enable-local-file-access": ""},
-) -> tuple[int, Path, Path]:
+) -> tuple[Exception | None, Path, Path]:
     post = Post.parse_html(name=html.stem, text=html.read_text())
     post.remove_elements()
     try:
         pdfkit.from_string(post.html, str(dst_f), options=options)
-    except OSError as ge:
-        return (0, html, dst_f)
+    except Exception as exc:
+        return (exc, html, dst_f)
     else:
-        return (1, html, dst_f)
+        return (None, html, dst_f)
 
 
 def _merge_chapters(pdfs: list[Path], out: Path) -> Path:
@@ -116,7 +116,7 @@ def _merge_chapters(pdfs: list[Path], out: Path) -> Path:
             ) from fe
         except pypdf.errors.PdfStreamError as pe:
             file.unlink()
-            logger.error(
+            raise MergingError(
                 f"Failed to merge {file} as the file is corrupted, please re-run the program to convert it again"
             )
 
@@ -337,15 +337,6 @@ class FileManager:
                 res.append((src_f, dst_f))
         return res
 
-    def convert_failed_htmls(self) -> SrcDstPairs:
-        res: SrcDstPairs = []
-        error_logs = self.error_log.read_text()
-        for error_log in error_logs.split():
-            src_f = Path(error_log.strip())
-            dst_f = self.pdf_chapter / src_f.parent.name / f"{src_f.stem}.pdf"
-            res.append((src_f, dst_f))
-        return res
-
     def remove_cache(self) -> None:
         shutil.rmtree(self.cache_folder)
 
@@ -402,14 +393,16 @@ class Application:
             self._file_mgr.html_chapter, use_cache=use_cache
         )
 
-    def _convert_to_pdf(self, dir_pairs: SrcDstPairs) -> list[tuple[int, Path, Path]]:
+    def _convert_to_pdf(
+        self, dir_pairs: SrcDstPairs
+    ) -> list[tuple[Exception | None, Path, Path]]:
         convert_task = self._progress.add_task("[green]Converting HTMLs...")
-        res: list[tuple[int, Path, Path]] = []
+        results: list[tuple[Exception | None, Path, Path]] = []
 
         if not dir_pairs:
             self._progress.log("Using cached pdfs, skip converting")
             self._progress.remove_task(convert_task)
-            return res
+            return results
 
         tasks = [
             self._worker_pool.apply_async(_html_to_pdf, args=(src_f, dst_f))
@@ -417,11 +410,14 @@ class Application:
         ]
         self._progress.update(convert_task, total=len(tasks))
         for task in tasks:
-            res.append(task.get())
+            res = task.get()
+            results.append(res)
             self._progress.update(convert_task, advance=1)
-        return res
+        return results
 
-    def _failed_cvt_filter(self, results: list[tuple[int, Path, Path]]) -> SrcDstPairs:
+    def _failed_cvt_filter(
+        self, results: list[tuple[Exception | None, Path, Path]]
+    ) -> SrcDstPairs:
         return [(src_f, dst_f) for _, src_f, dst_f in results if not dst_f.exists()]
 
     def convert_and_retry(self, use_cache: bool = True) -> None:
@@ -431,17 +427,19 @@ class Application:
 
         while failed_dirs and retries < self._cvt_max_retries:
             self._progress.log(
-                f"{len(failed_dirs)} htmls can't be converted, {self._cvt_max_retries - retries} retries left"
+                f"{len(failed_dirs)} HTMLs can't be converted, {self._cvt_max_retries - retries} retries left"
             )
-            failed_dirs = self._failed_cvt_filter(self._convert_to_pdf(failed_dirs))
+            new_results = self._convert_to_pdf(failed_dirs)
+            errors = [exc for exc, _, _ in results]
+            failed_dirs = self._failed_cvt_filter(new_results)
             retries += 1
 
         if failed_dirs:
-            for src_f, _ in failed_dirs:
-                self._file_mgr.append_error(str(src_f))
+            for exc in errors:
+                self._file_mgr.append_error(str(exc) + "\n")
 
-            self._progress.log(
-                f"{len(failed_dirs)} htmls can't be converted after retry, check {self._file_mgr.error_log} for failed htmls"
+            raise ConvertionError(
+                f"Failed to convert {len(failed_dirs)} HTMLs after retries, check {self._file_mgr.error_log} for failed htmls"
             )
 
     def _merging_pdfs(self, merging_folder: Path) -> list[Path]:
@@ -476,10 +474,9 @@ class Application:
             try:
                 res = task.get()
             except Exception as e:
-                raise MergingError(f"Failed to merge pdf: {e}")
+                raise MergingError(f"{e}")
             merged.append(res)
             self._progress.update(merging_task, advance=1)
-
         return merged
 
     def merge_chapters(self, use_cache: bool = True):
@@ -491,6 +488,13 @@ class Application:
         learncpp = _merge_chapters(merged, bookfile)
         self._file_mgr.pdf_merged_chapter_folder.rmdir()
         return learncpp
+
+    def show_errors(self) -> None:
+        error_logs = self._file_mgr.error_log.read_text()
+        if not error_logs:
+            self._progress.log("No errors found in error log")
+        for error_log in error_logs.split("\n"):
+            self._progress.log(error_log)
 
     def application_succeeded(self):
         return not self._file_mgr.error_log.exists() or (
@@ -523,6 +527,8 @@ class Application:
             if args.rmcache:
                 self._file_mgr.remove_cache()
                 self._progress.log("Cache removed")
+            if args.showerrors:
+                self.show_errors()
 
         if self.application_succeeded():
             self.succeed()
@@ -585,7 +591,6 @@ def parse_args() -> argparse.Namespace:
         help="Converting downloaded htmls to pdfs",
         action="store_true",
     )
-
     parser.add_argument(
         "-M", "--merge", help="Merging Chapters into a single book", action="store_true"
     )
@@ -593,7 +598,7 @@ def parse_args() -> argparse.Namespace:
         "-A", "--all", help="Download, convert and merge", action="store_true"
     )
     parser.add_argument("-R", "--rmcache", help="Remove cache", action="store_true")
-
+    parser.add_argument("-S", "--showerrors", help="Show errors", action="store_true")
     args = parser.parse_args()
     return args
 
