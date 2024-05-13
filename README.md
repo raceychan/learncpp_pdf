@@ -96,6 +96,6 @@ check [pdfsizeopt](https://github.com/pts/pdfsizeopt) out.
 
 ## Alternatives
 
-- [LearnCPP Downloader](https://github.com/amalrajan/learncpp-download/tree/master)
+- [LearnCPP Downloader](https://github.com/amalrajan/learncpp-download)
 
 This does not utilize concurrent requests and multiprocessing, so it takes substantially more time to do the job.

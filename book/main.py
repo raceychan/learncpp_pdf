@@ -30,6 +30,9 @@ SENTINEL = _Sentinel()
 class ProcessingError(Exception): ...
 
 
+class MissingDependencyError(ProcessingError): ...
+
+
 class HTMLParsingError(ProcessingError): ...
 
 
@@ -88,6 +91,14 @@ def namesort(name: str) -> tuple[int, int | str]:
     0 -> 9 -> "a" -> "z"
     """
     return (0, int(name)) if name.isdigit() else (1, name)
+
+
+def _check_dependencies():
+    deps = ["wkhtmltopdf"]
+    for dep in deps:
+        if dep_location := shutil.which(dep):
+            continue
+        raise MissingDependencyError(f"Dependency {dep} is not installed")
 
 
 def _html_to_pdf(
@@ -426,6 +437,10 @@ class Application:
             self._progress.log("Using cached pdfs, skip converting")
             return results
 
+        for src_f, dst_f in dir_pairs:
+            res = _html_to_pdf(src_f, dst_f)
+            results.append(res)
+
         tasks = [
             self._worker_pool.apply_async(_html_to_pdf, args=(src_f, dst_f))
             for src_f, dst_f in dir_pairs
@@ -435,7 +450,9 @@ class Application:
         for task in tasks:
             res = task.get(timeout=self._worker_timeout)
             results.append(res)
-            if not isinstance(res[0], Exception):
+            if isinstance(res[0], Exception):
+                self._progress.log(f"Convert failed: {res[0]}")
+            else:
                 self._progress.update(convert_task, advance=1)
         return results
 
@@ -556,7 +573,7 @@ class Application:
 
 
 def sessoin_factory(timeout: int = 120) -> aiohttp.ClientSession:
-    timeout = aiohttp.ClientTimeout(total=timeout, connect=30)
+    client_timeout = aiohttp.ClientTimeout(total=timeout, connect=30)
     session = aiohttp.ClientSession()
     return session
 
@@ -624,6 +641,7 @@ def parse_args() -> argparse.Namespace:
 
 
 async def main():
+    _check_dependencies()
     config = Config.from_env()
     args = parse_args() if len(sys.argv) > 1 else SENTINEL
     async with app_factory(config) as app:
