@@ -36,6 +36,7 @@ You can create a '.env' file under the project root, the program will read them.
 | --- | --- | --- |
 | DOWNLOAD_CONCURRENT_MAX |int | 200 |
 | COMPUTE_PROCESS_MAX | int | os.cpu_count() |
+| COMPUTE_PROCESS_TIMEOUT | int | 60 |
 | PDF_CONVERTION_MAX_RETRY | int | 3 |
 | BOOK_NAME | str | 'learncpp.pdf |
 | REMOVE_CACHE_ON_SUCCESS | bool | False |
@@ -47,7 +48,7 @@ Note: setting DOWNLOAD_CONCURRENT_MAX to higher number might boost download spee
 You can use cli with following options to force-redo an action.
 
 ```bash
-python -m book --help
+pixi run python -m book --help
 ```
 
 ```bash
@@ -58,12 +59,13 @@ options:
   -M, --merge     Merging Chapters into a single book, ignore cache
   -R, --rmcache   Remove the cache folder
   -A, --all       Download, convert and merge
+  -S, --showerrors show error log in the console
 ```
 
 example: re-run the convert process and remove the cache folder
 
 ```bash
-python -m book --convert --rmcache
+pixi run python -m book --convert --rmcache
 ```
 
 if not command specified, all actions will be taken(cache would be applied to avoid uncessary requests).

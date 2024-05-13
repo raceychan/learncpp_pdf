@@ -13,7 +13,6 @@ import pdfkit
 import pypdf
 import pypdf.errors
 from dotenv import dotenv_values
-from loguru import logger
 from rich.progress import Progress
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
@@ -50,6 +49,7 @@ class FileMissingError(ProcessingError): ...
 class Config:
     DOWNLOAD_CONCURRENT_MAX: int = 200
     COMPUTE_PROCESS_MAX: int = os.cpu_count() or 1
+    COMPUTE_PROCESS_TIMEOUT: int = 60
     PDF_CONVERTION_MAX_RETRY: int = 3
     BOOK_NAME: str = "learncpp.pdf"
     REMOVE_CACHE_ON_SUCCESS: bool = False
@@ -112,7 +112,7 @@ def _merge_chapters(pdfs: list[Path], out: Path) -> Path:
             merger.append(file)
         except FileNotFoundError as fe:
             raise MergingError(
-                f"Failed to find {file}, make sure it exists or re-run the program to download"
+                f"Failed to find {file}, make sure it exists or re-run the program to convert or download"
             ) from fe
         except pypdf.errors.PdfStreamError as pe:
             file.unlink()
@@ -244,7 +244,6 @@ class DownloadService:
         self._progress.update(self.__download_task, advance=1)
 
     async def download_chapters(self, chapters_folder: Path, use_cache: bool) -> None:
-        self.__download_task = self._progress.add_task("[red]Downloading HTMLs...")
         outline = await self.download_outline()
         todo = set()
         for table in outline.content_tables():
@@ -259,14 +258,18 @@ class DownloadService:
 
         if not todo:
             self._progress.log("Using cached htmls, skip download")
-            self._progress.remove_task(self.__download_task)
             return
 
+        self.__download_task = self._progress.add_task("[red]Downloading HTMLs...")
         self._progress.update(self.__download_task, total=len(todo))
         await asyncio.gather(*todo)
 
-    async def close(self) -> None:
-        await self._session.close()
+    async def __aenter__(self) -> "DownloadService":
+        await self._session.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tbx) -> None:
+        await self._session.__aexit__(exc_type, exc, tbx)
 
 
 class FileManager:
@@ -344,6 +347,13 @@ class FileManager:
         with self.error_log.open(mode="a") as f:
             f.write(f"{error_info} \n")
 
+    def append_errors(self, error_infos: list[Exception | None]) -> None:
+        with self.error_log.open(mode="a") as f:
+            for error_info in error_infos:
+                if not error_info:
+                    continue
+                f.write(f"{error_info} \n")
+
     def read_errors(self) -> str:
         return self.error_log.read_text()
 
@@ -358,6 +368,7 @@ class Application:
         file_mgr: FileManager,
         progress: Progress,
         worker_pool: Pool,
+        worker_timeout: int,
         remove_cache_on_success: bool = False,
     ):
         self._bookfile = bookfile
@@ -366,15 +377,24 @@ class Application:
         self._file_mgr = file_mgr
         self._progress = progress
         self._worker_pool = worker_pool
+        self._worker_timeout = worker_timeout
         self._remove_cache_on_success = remove_cache_on_success
         self.__task_succeed = False
 
     async def __aenter__(self) -> ty.Self:
         self._progress.__enter__()
+        self._worker_pool.__enter__()
         return self
 
-    async def __aexit__(self, exc, excval, traceback) -> None:
-        await self.close()
+    async def __aexit__(
+        self, exctype: type[Exception], exc: Exception, traceback
+    ) -> None:
+        self.__exit_log()
+        self._worker_pool.__exit__(exctype, exc, traceback)
+        await self._dl_service.__aexit__(exctype, exc, traceback)
+        self._progress.__exit__(exctype, exc, traceback)
+
+    def __exit_log(self):
         self._progress.log("Cleaning up ...")
         if self.__task_succeed:
             self._progress.console.rule("[green]Application succeeded")
@@ -383,7 +403,6 @@ class Application:
             self._progress.console.log(
                 f"[red]See details in [bold]{self._file_mgr.error_log}[/bold]",
             )
-        self._progress.__exit__(exc, excval, traceback)
 
     def succeed(self) -> None:
         self.__task_succeed = True
@@ -396,13 +415,12 @@ class Application:
     def _convert_to_pdf(
         self, dir_pairs: SrcDstPairs
     ) -> list[tuple[Exception | None, Path, Path]]:
-        convert_task = self._progress.add_task("[green]Converting HTMLs...")
         results: list[tuple[Exception | None, Path, Path]] = []
-
         if not dir_pairs:
             self._progress.log("Using cached pdfs, skip converting")
-            self._progress.remove_task(convert_task)
             return results
+
+        convert_task = self._progress.add_task("[green]Converting HTMLs...")
 
         tasks = [
             self._worker_pool.apply_async(_html_to_pdf, args=(src_f, dst_f))
@@ -410,9 +428,10 @@ class Application:
         ]
         self._progress.update(convert_task, total=len(tasks))
         for task in tasks:
-            res = task.get()
+            res = task.get(timeout=self._worker_timeout)
             results.append(res)
-            self._progress.update(convert_task, advance=1)
+            if not isinstance(res[0], Exception):
+                self._progress.update(convert_task, advance=1)
         return results
 
     def _failed_cvt_filter(
@@ -424,10 +443,11 @@ class Application:
         results = self._convert_to_pdf(self._file_mgr.sorted_dir_pairs(use_cache))
         failed_dirs = self._failed_cvt_filter(results)
         retries = 0
+        errors: list[Exception | None] = []
 
         while failed_dirs and retries < self._cvt_max_retries:
             self._progress.log(
-                f"{len(failed_dirs)} HTMLs can't be converted, {self._cvt_max_retries - retries} retries left"
+                f"{len(failed_dirs)} HTMLs can't be converted, retyring, {self._cvt_max_retries - retries} retries left"
             )
             new_results = self._convert_to_pdf(failed_dirs)
             errors = [exc for exc, _, _ in results]
@@ -435,9 +455,7 @@ class Application:
             retries += 1
 
         if failed_dirs:
-            for exc in errors:
-                self._file_mgr.append_error(str(exc) + "\n")
-
+            self._file_mgr.append_errors(errors)
             raise ConvertionError(
                 f"Failed to convert {len(failed_dirs)} HTMLs after retries, check {self._file_mgr.error_log} for failed htmls"
             )
@@ -472,7 +490,7 @@ class Application:
 
         for task in tasks:
             try:
-                res = task.get()
+                res = task.get(timeout=self._worker_timeout)
             except Exception as e:
                 raise MergingError(f"{e}")
             merged.append(res)
@@ -500,10 +518,6 @@ class Application:
         return not self._file_mgr.error_log.exists() or (
             self._file_mgr.read_errors() == ""
         )
-
-    async def close(self):
-        self._worker_pool.close()
-        await self._dl_service.close()
 
     async def run(self, args: argparse.Namespace | _Sentinel = SENTINEL):
         if isinstance(args, _Sentinel):
@@ -542,7 +556,7 @@ def sessoin_factory(timeout: int = 120) -> aiohttp.ClientSession:
     return session
 
 
-def app_factory(config: Config):
+def app_factory(config: Config) -> Application:
     sems = asyncio.Semaphore(value=config.DOWNLOAD_CONCURRENT_MAX)
     progress = Progress()
     dl_service = DownloadService(
@@ -569,6 +583,7 @@ def app_factory(config: Config):
         file_mgr=file_mgr,
         progress=progress,
         worker_pool=pool,
+        worker_timeout=config.COMPUTE_PROCESS_TIMEOUT,
     )
     return app
 
