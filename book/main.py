@@ -515,7 +515,7 @@ class Application:
     def show_errors(self) -> None:
         error_logs = self._file_mgr.error_log.read_text()
         if not error_logs:
-            self._progress.log("No errors found in error log")
+            self._progress.log("No errors found in the error log")
         for error_log in error_logs.split("\n"):
             self._progress.log(error_log)
 
