@@ -11,8 +11,8 @@ from pathlib import Path
 import aiohttp
 import pdfkit
 import pypdf
+import pypdf.errors
 from dotenv import dotenv_values
-from loguru import logger
 from rich.progress import Progress
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
@@ -21,16 +21,67 @@ frozen = dataclass(frozen=True, slots=True, kw_only=True)
 type SrcDstPairs = list[tuple[Path, Path]]
 
 
-class _SENTINEL: ...
+class _Sentinel: ...
 
 
-SENTINEL = _SENTINEL()
+SENTINEL = _Sentinel()
+
+
+class ProcessingError(Exception): ...
+
+
+class MissingDependencyError(ProcessingError):
+
+    def __init__(self, dep: str) -> None:
+        super().__init__(f"Missing dependency: {dep}")
+
+
+class HTMLParsingError(ProcessingError): ...
+
+
+class DownloadError(ProcessingError):
+    code: int
+    detail: str
+
+    def __init__(self, code: int, detail: str) -> None:
+        super().__init__(f"Download error: {code} {detail}")
+
+
+class MergingError(ProcessingError):
+    file: Path
+
+
+class PDFNotFoundError(MergingError):
+
+    def __init__(self, file: Path):
+        super().__init__(
+            f"Failed to find {file}, make sure it exists or re-run the program to convert or download"
+        )
+
+
+class CorruptedPDFError(MergingError):
+
+    def __init__(self, file: Path):
+        super().__init__(
+            f"Failed to convert {file} as the file is corrupted, please re-run the program to convert it again"
+        )
+
+
+class ConvertionError(ProcessingError):
+    def __init__(self, failed_num: int, error_path: Path):
+        super().__init__(
+            f"Failed to convert {failed_num} HTMLs after retries, check {error_path} for failed htmls"
+        )
+
+
+class FileMissingError(ProcessingError): ...
 
 
 @frozen
 class Config:
     DOWNLOAD_CONCURRENT_MAX: int = 200
     COMPUTE_PROCESS_MAX: int = os.cpu_count() or 1
+    COMPUTE_PROCESS_TIMEOUT: int = 60
     PDF_CONVERTION_MAX_RETRY: int = 3
     BOOK_NAME: str = "learncpp.pdf"
     REMOVE_CACHE_ON_SUCCESS: bool = False
@@ -46,6 +97,10 @@ class Config:
     PDF_CHAPTER: Path = PDF_FOLDER / HTML_CHAPTER.name
     PDF_MERGED_CHAPTER_FOLDER: Path = PDF_FOLDER / "learncpp"
 
+    @property
+    def BOOK_PATH(self) -> Path:
+        return self.PROJECT_ROOT / self.BOOK_NAME
+
     @classmethod
     def from_env(cls, env_file: Path = Path.cwd() / ".env") -> "Config":
         values = dotenv_values(env_file)
@@ -60,11 +115,6 @@ class Config:
         return cls(**values)
 
 
-def append_error(error_log: Path, error_info: str) -> None:
-    with error_log.open(mode="a") as f:
-        f.write(f"{error_info} \n")
-
-
 def namesort(name: str) -> tuple[int, int | str]:
     """Used to sort filenames
     0 -> 9 -> "a" -> "z"
@@ -72,25 +122,39 @@ def namesort(name: str) -> tuple[int, int | str]:
     return (0, int(name)) if name.isdigit() else (1, name)
 
 
+def _check_dependencies():
+    deps = ["wkhtmltopdf"]
+    for dep in deps:
+        if dep_location := shutil.which(dep):
+            continue
+        raise MissingDependencyError(dep=dep)
+
+
 def _html_to_pdf(
     html: Path,
     dst_f: Path,
     options: dict = {"enable-local-file-access": ""},
-) -> tuple[int, Path, Path]:
+) -> tuple[Exception | None, Path, Path]:
     post = Post.parse_html(name=html.stem, text=html.read_text())
     post.remove_elements()
     try:
         pdfkit.from_string(post.html, str(dst_f), options=options)
-    except OSError as ge:
-        return (0, html, dst_f)
+    except Exception as exc:
+        return (exc, html, dst_f)
     else:
-        return (1, html, dst_f)
+        return (None, html, dst_f)
 
 
 def _merge_chapters(pdfs: list[Path], out: Path) -> Path:
     merger = pypdf.PdfWriter()
     for file in pdfs:
-        merger.append(file)
+        try:
+            merger.append(file)
+        except FileNotFoundError as fe:
+            raise PDFNotFoundError(file) from fe
+        except pypdf.errors.PdfStreamError as pe:
+            file.unlink()
+            raise CorruptedPDFError(file) from pe
 
     merger.write(out)
     merger.close()
@@ -121,7 +185,7 @@ class Post:
     def parse_html(cls, *, name: str, text: str) -> "Post":
         root = LexborHTMLParser(text).root
         assert root
-        return cls(name=name, root=root)
+        return cls(name=name, root=root)  # type: ignore
 
 
 @frozen
@@ -144,8 +208,8 @@ class Chapter:
             0
         ].attributes["href"]
         if not link:
-            raise ValueError(f"Invalid link: {link}")
-        return cls(no=chapter_no, title=title, link=link)
+            raise HTMLParsingError(f"Invalid link for {title}: {link}")
+        return cls(no=chapter_no, title=title, link=link)  # type: ignore
 
 
 @frozen
@@ -160,12 +224,12 @@ class ChapterTable:
             0
         ].attributes["name"]
         if not table_name:
-            raise ValueError(f"Invalid table name: {table_name}")
+            raise HTMLParsingError(f"Invalid table name: {table_name}")
         chapter_nodes = table_node.select("div.lessontable-row").matches
         chapters = tuple(
             Chapter.from_node(chapter_node) for chapter_node in chapter_nodes
         )
-        return cls(name=table_name, chapters=chapters)
+        return cls(name=table_name, chapters=chapters)  # type: ignore
 
 
 @frozen
@@ -181,9 +245,9 @@ class OutLinePage:
     def parse_html(cls, text: str) -> "OutLinePage":
         outline_dom = LexborHTMLParser(text)
         if not outline_dom.body:
-            raise ValueError("Failed to parse html")
+            raise HTMLParsingError("Failed to parse the html of the outline page")
         content = outline_dom.body.select("div.entry-content").matches[0]
-        return cls(root=content)
+        return cls(root=content)  # type: ignore
 
 
 class DownloadService:
@@ -200,9 +264,12 @@ class DownloadService:
         self._progress = progress
 
     async def get_content(self, url: str = "/") -> str:
-        async with self._sems:
-            async with self._session.get(url) as response:
-                res = await response.text()
+        try:
+            async with self._sems:
+                async with self._session.get(url, raise_for_status=True) as response:
+                    res = await response.text()
+        except aiohttp.ClientResponseError as ce:
+            raise DownloadError(code=ce.status, detail=str(ce.request_info))
         return res
 
     async def download_outline(self) -> OutLinePage:
@@ -216,7 +283,6 @@ class DownloadService:
         self._progress.update(self.__download_task, advance=1)
 
     async def download_chapters(self, chapters_folder: Path, use_cache: bool) -> None:
-        self.__download_task = self._progress.add_task("[red]Downloading HTMLs...")
         outline = await self.download_outline()
         todo = set()
         for table in outline.content_tables():
@@ -226,39 +292,64 @@ class DownloadService:
                 dst_f = table_folder / chapter.filename
                 if use_cache and dst_f.exists():
                     continue
-                coro = self.download_chapter(chapter.link, dst_f)
-                todo.add(coro)
+                task = asyncio.create_task(self.download_chapter(chapter.link, dst_f))
+                todo.add(task)
 
         if not todo:
             self._progress.log("Using cached htmls, skip download")
-            self._progress.remove_task(self.__download_task)
             return
 
+        self.__download_task = self._progress.add_task("[red]Downloading HTMLs...")
         self._progress.update(self.__download_task, total=len(todo))
-        await asyncio.gather(*todo)
 
-    async def close(self) -> None:
-        await self._session.close()
+        done, _ = await asyncio.wait(todo, timeout=None)
+        for t in done:
+            if (e := t.exception()) is None:
+                continue
+            raise e
+        self._progress.log(f"Finished downloading {len(todo)} HTMLs")
+
+    async def __aenter__(self) -> "DownloadService":
+        await self._session.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tbx) -> None:
+        await self._session.__aexit__(exc_type, exc, tbx)
 
 
 class FileManager:
-    def __init__(self, config: Config):
-        self._config = config
+    def __init__(
+        self,
+        cache_folder: Path,
+        html_folder: Path,
+        html_chapter: Path,
+        pdf_folder: Path,
+        pdf_chapter: Path,
+        pdf_merged_chapter_folder: Path,
+        error_log: Path,
+    ):
+        self.cache_folder = cache_folder
+        self.html_folder = html_folder
+        self.html_chapter = html_chapter
+        self.pdf_folder = pdf_folder
+        self.pdf_chapter = pdf_chapter
+        self.pdf_merged_chapter_folder = pdf_merged_chapter_folder
+        self.error_log = error_log
         self.__setup()
 
     def __setup(self) -> None:
-        self._config.CACHE_FOLDER.mkdir(exist_ok=True)
-        self._config.HTML_FOLDER.mkdir(exist_ok=True)
-        self._config.HTML_CHAPTER.mkdir(exist_ok=True)
-        self._config.PDF_FOLDER.mkdir(exist_ok=True)
-        self._config.PDF_CHAPTER.mkdir(exist_ok=True)
-        self._config.PDF_MERGED_CHAPTER_FOLDER.mkdir(exist_ok=True)
-        self._config.ERROR_LOG.touch()
+        self.cache_folder.mkdir(exist_ok=True)
+        self.html_folder.mkdir(exist_ok=True)
+        self.html_chapter.mkdir(exist_ok=True)
+        self.pdf_folder.mkdir(exist_ok=True)
+        self.pdf_chapter.mkdir(exist_ok=True)
+        self.pdf_merged_chapter_folder.mkdir(exist_ok=True)
+        self.error_log.touch()
 
     @property
     def chapter_folders(self) -> list[Path]:
         chapter_folders = sorted(
-            self._config.HTML_CHAPTER.iterdir(),
+            self.html_chapter.iterdir(),
             key=lambda f: namesort(f.stem.split("Chapter")[1]),
         )
         return chapter_folders
@@ -266,7 +357,7 @@ class FileManager:
     def sorted_dst_dirs(self) -> list[list[Path]]:
         dst_dirs = []
         for chapter_folder in self.chapter_folders:
-            pdf_chapter = self._config.PDF_CHAPTER / chapter_folder.name
+            pdf_chapter = self.pdf_chapter / chapter_folder.name
             pdf_chapter.mkdir(exist_ok=True)
             htmls = sorted(
                 chapter_folder.iterdir(), key=lambda h: namesort(h.stem.split("_")[1])
@@ -278,9 +369,11 @@ class FileManager:
     def sorted_dir_pairs(self, use_cache: bool) -> SrcDstPairs:
         res: SrcDstPairs = []
         if not self.chapter_folders:
-            raise ValueError("Missing HTMLs of chapter, please download them first")
+            raise FileMissingError(
+                "Missing HTMLs of every chapters, please download them first"
+            )
         for chapter_folder in self.chapter_folders:
-            pdf_chapter = self._config.PDF_CHAPTER / chapter_folder.name
+            pdf_chapter = self.pdf_chapter / chapter_folder.name
             pdf_chapter.mkdir(exist_ok=True)
             htmls = sorted(
                 chapter_folder.iterdir(), key=lambda h: namesort(h.stem.split("_")[1])
@@ -292,17 +385,22 @@ class FileManager:
                 res.append((src_f, dst_f))
         return res
 
-    def convert_failed_htmls(self):
-        res: SrcDstPairs = []
-        error_logs = self._config.ERROR_LOG.read_text()
-        for error_log in error_logs.split():
-            src_f = Path(error_log.strip())
-            dst_f = self._config.PDF_CHAPTER / src_f.parent.name / f"{src_f.stem}.pdf"
-            res.append((src_f, dst_f))
-        return res
+    def remove_cache(self) -> None:
+        shutil.rmtree(self.cache_folder)
 
-    def remove_cached(self):
-        shutil.rmtree(self._config.CACHE_FOLDER)
+    def append_error(self, error_info: str) -> None:
+        with self.error_log.open(mode="a") as f:
+            f.write(f"{error_info} \n")
+
+    def append_errors(self, error_infos: list[Exception | None]) -> None:
+        with self.error_log.open(mode="a") as f:
+            for error_info in error_infos:
+                if not error_info:
+                    continue
+                f.write(f"{error_info} \n")
+
+    def read_errors(self) -> str:
+        return self.error_log.read_text()
 
 
 class Application:
@@ -310,94 +408,106 @@ class Application:
         self,
         *,
         bookfile: Path,
-        html_chapter_folder: Path,
-        pdf_chapter_folder: Path,
-        error_log: Path,
-        pdf_max_retries: int,
+        cvt_max_retries: int,
         dl_service: DownloadService,
         file_mgr: FileManager,
         progress: Progress,
         worker_pool: Pool,
+        worker_timeout: int,
         remove_cache_on_success: bool = False,
     ):
         self._bookfile = bookfile
-        self._html_chapter_folder = html_chapter_folder
-        self._pdf_chapter_folder = pdf_chapter_folder
-        self._error_log = error_log
-        self._pdf_max_retries = pdf_max_retries
+        self._cvt_max_retries = cvt_max_retries
         self._dl_service = dl_service
         self._file_mgr = file_mgr
         self._progress = progress
         self._worker_pool = worker_pool
+        self._worker_timeout = worker_timeout
         self._remove_cache_on_success = remove_cache_on_success
         self.__task_succeed = False
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> ty.Self:
         self._progress.__enter__()
+        self._worker_pool.__enter__()
         return self
 
-    async def __aexit__(self, exc, excval, traceback):
-        self._progress.__exit__(exc, excval, traceback)
-        await self.close()
+    async def __aexit__(
+        self, exctype: type[Exception], exc: Exception, traceback
+    ) -> None:
+        self.__exit_log()
+        self._worker_pool.__exit__(exctype, exc, traceback)
+        await self._dl_service.__aexit__(exctype, exc, traceback)
+        self._progress.__exit__(exctype, exc, traceback)
+
+    def __exit_log(self):
+        self._progress.log("Cleaning up ...")
         if self.__task_succeed:
-            logger.success("Application suceeded and now exiting")
+            self._progress.console.rule("[green]Application succeeded")
         else:
-            logger.error(
-                f"Application interrupted due to unknown error, check {self._error_log} for missing chapters"
+            self._progress.console.rule(f"[red]Application Failed")
+            self._progress.console.log(
+                f"[red]See details in [bold]{self._file_mgr.error_log}[/bold]",
             )
 
-    def succeed(self):
+    def succeed(self) -> None:
         self.__task_succeed = True
 
-    async def download_chapters(self, use_cache: bool = True):
+    async def download_chapters(self, use_cache: bool = True) -> None:
         await self._dl_service.download_chapters(
-            self._html_chapter_folder, use_cache=use_cache
+            self._file_mgr.html_chapter, use_cache=use_cache
         )
 
-    def _convert_to_pdf(self, dir_pairs: SrcDstPairs):
-        convert_task = self._progress.add_task("[green]Converting HTMLs...")
-        res: list[tuple[int, Path, Path]] = []
-
+    def _convert_to_pdf(
+        self, dir_pairs: SrcDstPairs
+    ) -> list[tuple[Exception | None, Path, Path]]:
+        results: list[tuple[Exception | None, Path, Path]] = []
         if not dir_pairs:
             self._progress.log("Using cached pdfs, skip converting")
-            self._progress.remove_task(convert_task)
-            return res
+            return results
 
         tasks = [
             self._worker_pool.apply_async(_html_to_pdf, args=(src_f, dst_f))
             for src_f, dst_f in dir_pairs
         ]
+        convert_task = self._progress.add_task("[green]Converting HTMLs...")
         self._progress.update(convert_task, total=len(tasks))
         for task in tasks:
-            res.append(task.get())
-            self._progress.update(convert_task, advance=1)
-        return res
+            res = task.get(timeout=self._worker_timeout)
+            results.append(res)
+            if isinstance(res[0], Exception):
+                self._progress.log(f"Convert failed: {res[0]}")
+            else:
+                self._progress.update(convert_task, advance=1)
+        return results
 
-    def _failed_cvt_filter(self, results: list[tuple[int, Path, Path]]):
+    def _failed_cvt_filter(
+        self, results: list[tuple[Exception | None, Path, Path]]
+    ) -> SrcDstPairs:
         return [(src_f, dst_f) for _, src_f, dst_f in results if not dst_f.exists()]
 
-    def convert_and_retry(self, use_cache: bool = True):
+    def convert_and_retry(self, use_cache: bool = True) -> None:
         results = self._convert_to_pdf(self._file_mgr.sorted_dir_pairs(use_cache))
         failed_dirs = self._failed_cvt_filter(results)
-        if not failed_dirs:
-            return
-        for _ in range(self._pdf_max_retries):
-            failed_dirs = self._failed_cvt_filter(self._convert_to_pdf(failed_dirs))
-            if not failed_dirs:
-                break
-        else:
-            failed = self._failed_cvt_filter(results)
-            for src_f, _ in failed:
-                append_error(self._error_log, str(src_f))
+        retries = 0
+        errors: list[Exception | None] = []
 
+        while failed_dirs and retries < self._cvt_max_retries:
             self._progress.log(
-                f"{len(failed)} htmls can't be converted after retries, check {self._error_log} for details"
+                f"{len(failed_dirs)} HTMLs can't be converted, retyring, {self._cvt_max_retries - retries} retries left"
             )
+            new_results = self._convert_to_pdf(failed_dirs)
+            errors = [exc for exc, _, _ in results]
+            failed_dirs = self._failed_cvt_filter(new_results)
+            retries += 1
+
+        if failed_dirs:
+            self._file_mgr.append_errors(errors)
+            raise ConvertionError(len(failed_dirs), self._file_mgr.error_log)
 
     def _merging_pdfs(self, merging_folder: Path) -> list[Path]:
         dst_dirs = self._file_mgr.sorted_dst_dirs()
         if not dst_dirs:
-            raise ValueError("Missing PDFs to convert, convert them first")
+            raise FileMissingError("Missing HTMLs to convert, download them first")
 
         merging_task = self._progress.add_task("[cyan]Merging PDFs...")
 
@@ -423,30 +533,39 @@ class Application:
         self._progress.update(merging_task, total=len(tasks))
 
         for task in tasks:
-            merged.append(task.get())
+            try:
+                res = task.get(timeout=self._worker_timeout)
+            except Exception as e:
+                raise MergingError(f"{e}")
+            merged.append(res)
             self._progress.update(merging_task, advance=1)
-
         return merged
 
     def merge_chapters(self, use_cache: bool = True):
         bookfile = self._bookfile
         if use_cache and bookfile.exists():
-            self._progress.log(f"{bookfile} alreasy exists, skip merging")
+            self._progress.log(f"Book '{bookfile.name}' alreasy exists, skip merging")
             return bookfile
-        merged = self._merging_pdfs(self._pdf_chapter_folder)
+        merged = self._merging_pdfs(self._file_mgr.pdf_merged_chapter_folder)
         learncpp = _merge_chapters(merged, bookfile)
+
+        shutil.rmtree(self._file_mgr.pdf_merged_chapter_folder)
         return learncpp
 
+    def show_errors(self) -> None:
+        error_logs = self._file_mgr.error_log.read_text()
+        if not error_logs:
+            self._progress.log("No errors found in the error log")
+        for error_log in error_logs.split("\n"):
+            self._progress.log(error_log)
+
     def application_succeeded(self):
-        errors = self._error_log.read_text()
-        return not errors
+        return not self._file_mgr.error_log.exists() or (
+            self._file_mgr.read_errors() == ""
+        )
 
-    async def close(self):
-        self._worker_pool.close()
-        await self._dl_service.close()
-
-    async def run(self, args: argparse.Namespace | _SENTINEL = SENTINEL):
-        if isinstance(args, _SENTINEL):
+    async def run(self, args: argparse.Namespace | _Sentinel = SENTINEL):
+        if isinstance(args, _Sentinel):
             await self.download_chapters()
             self.convert_and_retry()
             self.merge_chapters()
@@ -457,24 +576,32 @@ class Application:
         else:
             if args.download:
                 await self.download_chapters(use_cache=False)
+                self._progress.log("Chapters downloaded")
             if args.convert:
                 self.convert_and_retry(use_cache=False)
+                self._progress.log("HTMLs Converted")
             if args.merge:
                 self.merge_chapters(use_cache=False)
+                self._progress.log("PDFs merged")
+            if args.rmcache:
+                self._file_mgr.remove_cache()
+                self._progress.log("Cache removed")
+            if args.showerrors:
+                self.show_errors()
 
         if self.application_succeeded():
             self.succeed()
             if self._remove_cache_on_success:
-                self._file_mgr.remove_cached()
+                self._file_mgr.remove_cache()
 
 
-def sessoin_factory():
-    # timeout = aiohttp.ClientTimeout(total=60, connect=10)
+def sessoin_factory(timeout: int = 120) -> aiohttp.ClientSession:
+    client_timeout = aiohttp.ClientTimeout(total=timeout, connect=30)
     session = aiohttp.ClientSession()
     return session
 
 
-def app_factory(config: Config):
+def app_factory(config: Config) -> Application:
     sems = asyncio.Semaphore(value=config.DOWNLOAD_CONCURRENT_MAX)
     progress = Progress()
     dl_service = DownloadService(
@@ -483,19 +610,25 @@ def app_factory(config: Config):
         home_url=config.LEARNCPP,
         progress=progress,
     )
-    file_mgr = FileManager(config=config)
+    file_mgr = FileManager(
+        cache_folder=config.CACHE_FOLDER,
+        html_folder=config.HTML_FOLDER,
+        html_chapter=config.HTML_CHAPTER,
+        pdf_folder=config.PDF_FOLDER,
+        pdf_chapter=config.PDF_CHAPTER,
+        pdf_merged_chapter_folder=config.PDF_MERGED_CHAPTER_FOLDER,
+        error_log=config.ERROR_LOG,
+    )
     pool = Pool(processes=config.COMPUTE_PROCESS_MAX)
 
     app = Application(
-        bookfile=config.PROJECT_ROOT / config.BOOK_NAME,
-        html_chapter_folder=config.HTML_CHAPTER,
-        pdf_chapter_folder=config.PDF_MERGED_CHAPTER_FOLDER,
-        error_log=config.ERROR_LOG,
-        pdf_max_retries=config.PDF_CONVERTION_MAX_RETRY,
+        bookfile=config.BOOK_PATH,
+        cvt_max_retries=config.PDF_CONVERTION_MAX_RETRY,
         dl_service=dl_service,
         file_mgr=file_mgr,
         progress=progress,
         worker_pool=pool,
+        worker_timeout=config.COMPUTE_PROCESS_TIMEOUT,
     )
     return app
 
@@ -518,19 +651,20 @@ def parse_args() -> argparse.Namespace:
         help="Converting downloaded htmls to pdfs",
         action="store_true",
     )
-
     parser.add_argument(
         "-M", "--merge", help="Merging Chapters into a single book", action="store_true"
     )
     parser.add_argument(
         "-A", "--all", help="Download, convert and merge", action="store_true"
     )
-
+    parser.add_argument("-R", "--rmcache", help="Remove cache", action="store_true")
+    parser.add_argument("-S", "--showerrors", help="Show errors", action="store_true")
     args = parser.parse_args()
     return args
 
 
 async def main():
+    _check_dependencies()
     config = Config.from_env()
     args = parse_args() if len(sys.argv) > 1 else SENTINEL
     async with app_factory(config) as app:

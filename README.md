@@ -2,7 +2,13 @@
 
 ## Disclaimer
 
-All content comes from [learncpp.com](https://learncpp.com), since it specifically states that a pdf version should not be spread out by anyone and people should instead make pdf on their own, hence this tool is created
+All content directly comes from the [learncpp.com](https://learncpp.com) website, no content changed, some decorative elements and the comment section is removed for better readability.
+
+> *Please consider supporting the website here [learncpp-about](https://www.learncpp.com/about/)*
+
+since it specifically states that a pdf version should not be spread out by anyone and people should instead make pdf on their own, this tool is hence created.
+
+please consider give a star to this project if you like it!
 
 ## Usage
 
@@ -12,13 +18,23 @@ All content comes from [learncpp.com](https://learncpp.com), since it specifical
 git clone 'git@github.com:raceychan/learncpp_pdf.git'
 ```
 
-2.cd to src folder
+2. cd to src folder
 
 ```bash
 cd learncpp_pdf
 ```
 
-3.execute the application
+3. install wkhtmltopdf
+for ubuntu/debian users, do:
+
+```bash
+sudo apt-get install wkhtmltopdf
+```
+
+> as a user who uses a different os, you might see more details on this page [wkhtmltopdf-download](https://wkhtmltopdf.org/downloads.html)
+
+
+4. execute the application
 
 ```bash
 make install && make run
@@ -32,16 +48,19 @@ You can create a '.env' file under the project root, the program will read them.
 | --- | --- | --- |
 | DOWNLOAD_CONCURRENT_MAX |int | 200 |
 | COMPUTE_PROCESS_MAX | int | os.cpu_count() |
+| COMPUTE_PROCESS_TIMEOUT | int | 60 |
 | PDF_CONVERTION_MAX_RETRY | int | 3 |
 | BOOK_NAME | str | 'learncpp.pdf |
 | REMOVE_CACHE_ON_SUCCESS | bool | False |
+
+Note: setting DOWNLOAD_CONCURRENT_MAX to higher number might boost download speed, but some requests might fail as it exerts more pressure on the website
 
 ## CLI
 
 You can use cli with following options to force-redo an action.
 
 ```bash
-python -m book --help
+pixi run python -m book --help
 ```
 
 ```bash
@@ -50,10 +69,26 @@ options:
   -D, --download  Downloading articles from learcpp.com, ignore cache
   -C, --convert   Converting downloaded htmls to pdfs, ignore cache
   -M, --merge     Merging Chapters into a single book, ignore cache
+  -R, --rmcache   Remove the cache folder
   -A, --all       Download, convert and merge
+  -S, --showerrors show error log in the console
 ```
 
-if not command specified, all actions will be taken.
+example: re-run the convert process and remove the cache folder
+
+```bash
+pixi run python -m book --convert --rmcache
+```
+
+if not command specified, all actions will be taken(cache would be applied to avoid uncessary requests).
+
+## Use-Tips
+
+- It is possible that the download process and/or the convert process might fail due to various reason, for example, the target site is overloaded, in most cases, you can simply just re-run the program to solve these problems.
+However, if you do think it is a bug, always feel free to post an issue.
+
+- You might want to compress the pdf book for performance and storage.
+check [pdfsizeopt](https://github.com/pts/pdfsizeopt) out.
 
 ## Features
 
@@ -63,6 +98,6 @@ if not command specified, all actions will be taken.
 
 ## Alternatives
 
-- [LearnCPP Downloader](https://github.com/amalrajan/learncpp-download/tree/master)
+- [LearnCPP Downloader](https://github.com/amalrajan/learncpp-download)
 
 This does not utilize concurrent requests and multiprocessing, so it takes substantially more time to do the job.
