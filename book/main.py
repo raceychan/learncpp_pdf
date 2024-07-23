@@ -37,7 +37,7 @@ class Config:
 
     LEARNCPP: str = "https://www.learncpp.com"
     PROJECT_ROOT: Path = Path(__file__).parent.parent
-    CACHE_FOLDER = PROJECT_ROOT / ".tmp"
+    CACHE_FOLDER: Path = PROJECT_ROOT / ".tmp"
     ERROR_LOG: Path = CACHE_FOLDER / "error"
     HTML_FOLDER: Path = CACHE_FOLDER / "html"
     HTML_CHAPTER: Path = HTML_FOLDER / "chapters"
@@ -397,7 +397,7 @@ class Application:
     def _merging_pdfs(self, merging_folder: Path) -> list[Path]:
         dst_dirs = self._file_mgr.sorted_dst_dirs()
         if not dst_dirs:
-            raise ValueError("Missing HTMLs to convert, download them first")
+            raise ValueError("Missing PDFs to convert, convert them first")
 
         merging_task = self._progress.add_task("[cyan]Merging PDFs...")
 
