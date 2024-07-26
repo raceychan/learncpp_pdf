@@ -49,8 +49,9 @@ You can create a '.env' file under the project root, the program will read them.
 | DOWNLOAD_CONCURRENT_MAX |int | 200 |
 | COMPUTE_PROCESS_MAX | int | os.cpu_count() |
 | COMPUTE_PROCESS_TIMEOUT | int | 60 |
+| DOWNLOAD_CONTENT_RETRY | int | 6 |
 | PDF_CONVERTION_MAX_RETRY | int | 3 |
-| BOOK_NAME | str | 'learncpp.pdf |
+| BOOK_NAME | str | 'learncpp.pdf' |
 | REMOVE_CACHE_ON_SUCCESS | bool | False |
 
 Note: setting DOWNLOAD_CONCURRENT_MAX to higher number might boost download speed, but some requests might fail as it exerts more pressure on the website
