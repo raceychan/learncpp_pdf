@@ -82,6 +82,7 @@ class Config:
     DOWNLOAD_CONCURRENT_MAX: int = 200
     COMPUTE_PROCESS_MAX: int = os.cpu_count() or 1
     COMPUTE_PROCESS_TIMEOUT: int = 60
+    DOWNLOAD_CONTENT_RETRY: int = 6
     PDF_CONVERTION_MAX_RETRY: int = 3
     BOOK_NAME: str = "learncpp.pdf"
     REMOVE_CACHE_ON_SUCCESS: bool = False
@@ -257,20 +258,34 @@ class DownloadService:
         sems: asyncio.Semaphore,
         home_url: str,
         progress: Progress,
+        max_retries: int,
     ):
         self._session = session
         self._sems = sems
         self._home_url = home_url
         self._progress = progress
+        self._initial_timeout = 10
+        self._retry_timeout = 30
+        self._max_retries = max_retries
 
     async def get_content(self, url: str = "/") -> str:
-        try:
-            async with self._sems:
-                async with self._session.get(url, raise_for_status=True) as response:
-                    res = await response.text()
-        except aiohttp.ClientResponseError as ce:
-            raise DownloadError(code=ce.status, detail=str(ce.request_info))
-        return res
+        retry_count = 0
+        timeout = self._initial_timeout
+        last_exception = None
+
+        while retry_count < self._max_retries:
+            try:
+                async with self._sems:
+                    async with self._session.get(url, timeout=timeout) as response:
+                        response.raise_for_status()  # Raise an exception for HTTP error responses
+                        return await response.text()
+            except (aiohttp.ClientResponseError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_exception = e
+                print(f"Download error: Attempt {retry_count + 1} failed: {url} : {last_exception}")
+                retry_count += 1
+                timeout = self._retry_timeout
+
+        raise DownloadError(code=last_exception.status, detail=str(last_exception.request_info))
 
     async def download_outline(self) -> OutLinePage:
         html = await self.get_content(self._home_url)
@@ -473,11 +488,19 @@ class Application:
         self._progress.update(convert_task, total=len(tasks))
         for task in tasks:
             res = task.get(timeout=self._worker_timeout)
-            results.append(res)
-            if isinstance(res[0], Exception):
-                self._progress.log(f"Convert failed: {res[0]}")
+            error, src_path, dst_path = res
+            if isinstance(error, Exception):
+                # Exit with code 1 due to network error: ContentNotFoundError
+                # Having additional link URLs in the HTML can cause wkhtmltopdf
+                # to throw a ContentNotFoundError if those URLs point to resources
+                # that are not accessible or do not exist but the pdf would be generated
+                if os.path.exists(dst_path):
+                    self._progress.update(convert_task, advance=1)
+                else:
+                    self._progress.log(f"Convert failed for {src_path} to {dst_path}: {error}")
             else:
                 self._progress.update(convert_task, advance=1)
+            results.append(res)
         return results
 
     def _failed_cvt_filter(
@@ -609,6 +632,7 @@ def app_factory(config: Config) -> Application:
         sems=sems,
         home_url=config.LEARNCPP,
         progress=progress,
+        max_retries=config.DOWNLOAD_CONTENT_RETRY,
     )
     file_mgr = FileManager(
         cache_folder=config.CACHE_FOLDER,

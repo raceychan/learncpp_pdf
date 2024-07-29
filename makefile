@@ -5,3 +5,7 @@ install:
 
 run:
 	$(PIXI_PATH) run python -m book
+
+clean:
+	rm -rf .tmp
+	rm learncpp.pdf
