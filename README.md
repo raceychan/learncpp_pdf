@@ -13,10 +13,11 @@ please consider give a star to this project if you like it!
 ## PDF created by this tool
 ![image](https://github.com/user-attachments/assets/42f8b9de-d3ac-4463-b82b-c4f79e6ba267)
 
-Fast Download and Convertion time
+### 
+Fast Download and Convertion time, Download all content within 5s with 20 concurrent requests. Comple the whole process within 90s.
 ![image](https://github.com/user-attachments/assets/159b1e43-22b5-4cfa-897e-15ae72d11225)
-
 ![image](https://github.com/user-attachments/assets/0ccd4d18-1ae6-4661-b528-c376c1f59768)
+![image](https://github.com/user-attachments/assets/39004585-7104-44b8-8e12-1ad172345b8f)
 
 
 ## Usage
