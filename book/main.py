@@ -24,7 +24,6 @@ from book.errors import (
     MissingDependencyError,
     PDFNotFoundError,
 )
-from book.tui import Menual
 from book.web_layout import OutLinePage, Post
 
 type SrcDstPairs = list[tuple[Path, Path]]
@@ -332,14 +331,12 @@ class Application:
                 # Having additional link URLs in the HTML can cause wkhtmltopdf
                 # to throw a ContentNotFoundError if those URLs point to resources
                 # that are not accessible or do not exist but the pdf would be generated
-                if dst_path.exists():
-                    self._progress.update(convert_task, advance=1)
-                else:
+                if not dst_path.exists():
                     self._progress.log(
                         f"Convert failed for {src_path} to {dst_path}: {error}"
                     )
-            else:
-                self._progress.update(convert_task, advance=1)
+                    continue
+            self._progress.update(convert_task, advance=1)
             results.append(res)
         return results
 
@@ -503,7 +500,7 @@ def app_factory(config: Config) -> Application:
 
 
 def parser_factory() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(__name__)
 
     parser.add_argument(
         "-D",

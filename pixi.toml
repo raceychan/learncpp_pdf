@@ -1,21 +1,21 @@
 [project]
-name = "book"
-version = "0.1.0"
-description = "Add a short description here"
 authors = ["raceychan <raceychan@gmail.com>"]
 channels = ["conda-forge"]
+description = "Add a short description here"
+name = "book"
 platforms = ["linux-64"]
+version = "0.1.0"
 
 [tasks]
 
 [dependencies]
 aiohttp = ">=3.9.3,<3.10"
-python = "==3.12"
-selectolax = ">=0.3.20,<0.4"
 loguru = ">=0.7.2,<0.8"
-rich = ">=13.7.1,<13.8"
 pypdf = ">=4.1.0,<4.2"
+python = "==3.12"
 python-dotenv = ">=1.0.1,<1.1"
+rich = ">=13.7.1,<13.8"
+selectolax = ">=0.3.20,<0.4"
 textual = ">=0.82.0,<0.83"
 
 [pypi-dependencies]
