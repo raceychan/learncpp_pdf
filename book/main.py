@@ -1,22 +1,31 @@
 import argparse
 import asyncio
-import os
 import shutil
 import sys
+import time
 import typing as ty
-from dataclasses import dataclass
-from multiprocessing.pool import Pool
+from multiprocessing.pool import AsyncResult, Pool
 from pathlib import Path
 
 import aiohttp
 import pdfkit
 import pypdf
 import pypdf.errors
-from dotenv import dotenv_values
 from rich.progress import Progress
-from selectolax.lexbor import LexborHTMLParser, LexborNode
+from rich.rule import Rule
 
-frozen = dataclass(frozen=True, slots=True, kw_only=True)
+from book.config import Config
+from book.errors import (
+    ConvertionError,
+    CorruptedPDFError,
+    DownloadError,
+    FileMissingError,
+    MergingError,
+    MissingDependencyError,
+    PDFNotFoundError,
+)
+from book.tui import Menual
+from book.web_layout import OutLinePage, Post
 
 type SrcDstPairs = list[tuple[Path, Path]]
 
@@ -25,95 +34,6 @@ class _Sentinel: ...
 
 
 SENTINEL = _Sentinel()
-
-
-class ProcessingError(Exception): ...
-
-
-class MissingDependencyError(ProcessingError):
-
-    def __init__(self, dep: str) -> None:
-        super().__init__(f"Missing dependency: {dep}")
-
-
-class HTMLParsingError(ProcessingError): ...
-
-
-class DownloadError(ProcessingError):
-    code: int
-    detail: str
-
-    def __init__(self, code: int, detail: str) -> None:
-        super().__init__(f"Download error: {code} {detail}")
-
-
-class MergingError(ProcessingError):
-    file: Path
-
-
-class PDFNotFoundError(MergingError):
-
-    def __init__(self, file: Path):
-        super().__init__(
-            f"Failed to find {file}, make sure it exists or re-run the program to convert or download"
-        )
-
-
-class CorruptedPDFError(MergingError):
-
-    def __init__(self, file: Path):
-        super().__init__(
-            f"Failed to convert {file} as the file is corrupted, please re-run the program to convert it again"
-        )
-
-
-class ConvertionError(ProcessingError):
-    def __init__(self, failed_num: int, error_path: Path):
-        super().__init__(
-            f"Failed to convert {failed_num} HTMLs after retries, check {error_path} for failed htmls"
-        )
-
-
-class FileMissingError(ProcessingError): ...
-
-
-@frozen
-class Config:
-    DOWNLOAD_CONCURRENT_MAX: int = 200
-    COMPUTE_PROCESS_MAX: int = os.cpu_count() or 1
-    COMPUTE_PROCESS_TIMEOUT: int = 60
-    DOWNLOAD_CONTENT_RETRY: int = 6
-    PDF_CONVERTION_MAX_RETRY: int = 3
-    BOOK_NAME: str = "learncpp.pdf"
-    REMOVE_CACHE_ON_SUCCESS: bool = False
-
-    LEARNCPP: str = "https://www.learncpp.com"
-    PROJECT_ROOT: Path = Path(__file__).parent.parent
-    CACHE_FOLDER: Path = PROJECT_ROOT / ".tmp"
-    ERROR_LOG: Path = CACHE_FOLDER / "error"
-    HTML_FOLDER: Path = CACHE_FOLDER / "html"
-    HTML_CHAPTER: Path = HTML_FOLDER / "chapters"
-    CHAPTER_OUTLINE: Path = HTML_FOLDER / "outline.html"
-    PDF_FOLDER: Path = CACHE_FOLDER / "pdf"
-    PDF_CHAPTER: Path = PDF_FOLDER / HTML_CHAPTER.name
-    PDF_MERGED_CHAPTER_FOLDER: Path = PDF_FOLDER / "learncpp"
-
-    @property
-    def BOOK_PATH(self) -> Path:
-        return self.PROJECT_ROOT / self.BOOK_NAME
-
-    @classmethod
-    def from_env(cls, env_file: Path = Path.cwd() / ".env") -> "Config":
-        values = dotenv_values(env_file)
-        for k, v in values.items():
-            if val_type := cls.__annotations__.get(k):
-                try:
-                    values[k] = val_type(v)
-                except ValueError as e:
-                    raise ValueError(
-                        f"Invalid value for {k}, make sure it can be parsed as {val_type}"
-                    )
-        return cls(**values)
 
 
 def namesort(name: str) -> tuple[int, int | str]:
@@ -162,95 +82,6 @@ def _merge_chapters(pdfs: list[Path], out: Path) -> Path:
     return out
 
 
-@frozen
-class Post:
-    _REMOVE_ELEMENTS: ty.ClassVar[list[str]] = [
-        "header.cryout",
-        ".entry-content > .prevnext",
-        ".comments-area",
-    ]
-    name: str
-    root: LexborNode
-
-    @property
-    def html(self) -> str:
-        assert self.root.html
-        return self.root.html
-
-    def remove_elements(self: "Post") -> None:
-        for ele in self._REMOVE_ELEMENTS:
-            if node := self.root.css_first(ele):
-                node.decompose()
-
-    @classmethod
-    def parse_html(cls, *, name: str, text: str) -> "Post":
-        root = LexborHTMLParser(text).root
-        assert root
-        return cls(name=name, root=root)  # type: ignore
-
-
-@frozen
-class Chapter:
-    no: str
-    title: str
-    link: str
-
-    @property
-    def filename(self) -> str:
-        no = self.no.replace(".", "_").replace(" ", "_")
-        return f"{no}.html"
-
-    @classmethod
-    def from_node(cls, chapter_node: LexborNode) -> "Chapter":
-        chapter_no = chapter_node.css("div.lessontable-row-number")[0].text()
-        title_node = chapter_node.css("div.lessontable-row-title")[0]
-        title = title_node.text()
-        link = title_node.css('a[href^="https://www.learncpp.com/cpp-tutorial/"]')[
-            0
-        ].attributes["href"]
-        if not link:
-            raise HTMLParsingError(f"Invalid link for {title}: {link}")
-        return cls(no=chapter_no, title=title, link=link)  # type: ignore
-
-
-@frozen
-class ChapterTable:
-    "a groupd of chapters, e.g chapter 28.*"
-    name: str
-    chapters: tuple[Chapter, ...]
-
-    @classmethod
-    def from_node(cls, table_node: LexborNode) -> "ChapterTable":
-        table_name = table_node.css('div.lessontable-header > a[name*="Chapter"]')[
-            0
-        ].attributes["name"]
-        if not table_name:
-            raise HTMLParsingError(f"Invalid table name: {table_name}")
-        chapter_nodes = table_node.select("div.lessontable-row").matches
-        chapters = tuple(
-            Chapter.from_node(chapter_node) for chapter_node in chapter_nodes
-        )
-        return cls(name=table_name, chapters=chapters)  # type: ignore
-
-
-@frozen
-class OutLinePage:
-    root: LexborNode
-
-    def content_tables(self):
-        tables = self.root.select("div.lessontable").matches
-        for table in tables:
-            yield ChapterTable.from_node(table)
-
-    @classmethod
-    def parse_html(cls, text: str) -> "OutLinePage":
-        outline_dom = LexborHTMLParser(text)
-        if not outline_dom.body:
-            raise HTMLParsingError("Failed to parse the html of the outline page")
-        content = outline_dom.body.select("div.entry-content").matches[0]
-        return cls(root=content)  # type: ignore
-
-
 class DownloadService:
     def __init__(
         self,
@@ -271,21 +102,28 @@ class DownloadService:
     async def get_content(self, url: str = "/") -> str:
         retry_count = 0
         timeout = self._initial_timeout
-        last_exception = None
 
+        last_exception = None
         while retry_count < self._max_retries:
             try:
                 async with self._sems:
                     async with self._session.get(url, timeout=timeout) as response:
                         response.raise_for_status()  # Raise an exception for HTTP error responses
                         return await response.text()
-            except (aiohttp.ClientResponseError, aiohttp.ClientError, asyncio.TimeoutError) as e:
-                last_exception = e
-                print(f"Download error: Attempt {retry_count + 1} failed: {url} : {last_exception}")
+            except (
+                aiohttp.ClientError,
+                asyncio.TimeoutError,
+            ) as e:
+                self._progress.log(
+                    f"Download error: Attempt {retry_count + 1} failed: {url} : {e}"
+                )
                 retry_count += 1
                 timeout = self._retry_timeout
-
-        raise DownloadError(code=last_exception.status, detail=str(last_exception.request_info))
+                last_exception = e
+        if last_exception:
+            raise DownloadError(code=400, detail=str(last_exception))
+        else:
+            raise DownloadError(code=400, detail="unkown download error")
 
     async def download_outline(self) -> OutLinePage:
         html = await self.get_content(self._home_url)
@@ -489,15 +327,17 @@ class Application:
         for task in tasks:
             res = task.get(timeout=self._worker_timeout)
             error, src_path, dst_path = res
-            if isinstance(error, Exception):
+            if error:
                 # Exit with code 1 due to network error: ContentNotFoundError
                 # Having additional link URLs in the HTML can cause wkhtmltopdf
                 # to throw a ContentNotFoundError if those URLs point to resources
                 # that are not accessible or do not exist but the pdf would be generated
-                if os.path.exists(dst_path):
+                if dst_path.exists():
                     self._progress.update(convert_task, advance=1)
                 else:
-                    self._progress.log(f"Convert failed for {src_path} to {dst_path}: {error}")
+                    self._progress.log(
+                        f"Convert failed for {src_path} to {dst_path}: {error}"
+                    )
             else:
                 self._progress.update(convert_task, advance=1)
             results.append(res)
@@ -534,7 +374,7 @@ class Application:
 
         merging_task = self._progress.add_task("[cyan]Merging PDFs...")
 
-        tasks = []
+        tasks: list[AsyncResult] = []
         merged: list[Path] = []
 
         for pdf_dirs in dst_dirs:
@@ -588,6 +428,7 @@ class Application:
         )
 
     async def run(self, args: argparse.Namespace | _Sentinel = SENTINEL):
+        pre = time.perf_counter()
         if isinstance(args, _Sentinel):
             await self.download_chapters()
             self.convert_and_retry()
@@ -611,16 +452,20 @@ class Application:
                 self._progress.log("Cache removed")
             if args.showerrors:
                 self.show_errors()
+        aft = time.perf_counter()
 
         if self.application_succeeded():
             self.succeed()
             if self._remove_cache_on_success:
                 self._file_mgr.remove_cache()
 
+        self._progress.log(Rule("Complete"))
+        self._progress.log(f"cost {round(aft - pre, 3)}s")
+
 
 def sessoin_factory(timeout: int = 120) -> aiohttp.ClientSession:
-    client_timeout = aiohttp.ClientTimeout(total=timeout, connect=30)
-    session = aiohttp.ClientSession()
+    client_timeout = aiohttp.ClientTimeout(total=timeout, connect=timeout // 4)
+    session = aiohttp.ClientSession(timeout=client_timeout)
     return session
 
 
@@ -657,7 +502,7 @@ def app_factory(config: Config) -> Application:
     return app
 
 
-def parse_args() -> argparse.Namespace:
+def parser_factory() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -683,14 +528,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("-R", "--rmcache", help="Remove cache", action="store_true")
     parser.add_argument("-S", "--showerrors", help="Show errors", action="store_true")
-    args = parser.parse_args()
-    return args
+    return parser
 
 
 async def main():
     _check_dependencies()
     config = Config.from_env()
-    args = parse_args() if len(sys.argv) > 1 else SENTINEL
+    parser = parser_factory()
+    args = parser.parse_args() if len(sys.argv) > 1 else SENTINEL
+
     async with app_factory(config) as app:
         await app.run(args)
 

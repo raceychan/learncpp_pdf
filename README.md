@@ -30,7 +30,7 @@ git clone 'git@github.com:raceychan/learncpp_pdf.git' && cd learncpp_pdf
 3. execute the application
 
 ```bash
-make install && make run
+make book
 ```
 
 ### Configuration

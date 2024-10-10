@@ -9,3 +9,8 @@ run:
 clean:
 	rm -rf .tmp
 	rm learncpp.pdf
+
+.PHONY: book
+book:
+	$(MAKE) install
+	$(MAKE) run
