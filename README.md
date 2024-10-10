@@ -1,4 +1,4 @@
-![image](https://github.com/user-attachments/assets/34003f47-aa8a-4973-b4ae-aacf9401df19)# LearnCPP_PDF
+# LearnCPP-PDF
 
 ## Disclaimer
 
@@ -41,6 +41,11 @@ git clone 'git@github.com:raceychan/learncpp_pdf.git' && cd learncpp_pdf
 
 ```bash
 make book
+```
+or, to re-run the application, do
+
+```bash
+make run
 ```
 
 ### Configuration
