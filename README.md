@@ -12,19 +12,7 @@ please consider give a star to this project if you like it!
 
 ## Usage
 
-1.clone the repo
-
-```bash
-git clone 'git@github.com:raceychan/learncpp_pdf.git'
-```
-
-2. cd to src folder
-
-```bash
-cd learncpp_pdf
-```
-
-3. install wkhtmltopdf
+1. install wkhtmltopdf
 for ubuntu/debian users, do:
 
 ```bash
@@ -33,8 +21,13 @@ sudo apt-get install wkhtmltopdf
 
 > as a user who uses a different os, you might see more details on this page [wkhtmltopdf-download](https://wkhtmltopdf.org/downloads.html)
 
+2.clone the repo
 
-4. execute the application
+```bash
+git clone 'git@github.com:raceychan/learncpp_pdf.git' && cd learncpp_pdf
+```
+
+3. execute the application
 
 ```bash
 make install && make run
