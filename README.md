@@ -29,9 +29,9 @@ for ubuntu/debian users, do:
 sudo apt-get install wkhtmltopdf
 ```
 
-> as a user who uses a different os, you might see more details on this page [wkhtmltopdf-download](https://wkhtmltopdf.org/downloads.html)
+> as a user who uses a different os than ubuntu/debian, you might see more details on this page [wkhtmltopdf-download](https://wkhtmltopdf.org/downloads.html)
 
-2.clone the repo
+2. clone the repo
 
 ```bash
 git clone 'git@github.com:raceychan/learncpp_pdf.git' && cd learncpp_pdf
